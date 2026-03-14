@@ -2,7 +2,12 @@ import socket
 import os
 import threading
 import time
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, build_packet, parse_packet
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
+
+# Sliding window specifications
+WINDOW_SIZE  = 16 
+TIMEOUT = 2.0
+CHUNK_SIZE = 1024  # size of each file chunk to send (in bytes)
 
 class SRFT_UDPServer:
     def __init__(self):
@@ -28,6 +33,13 @@ class SRFT_UDPServer:
         except PermissionError:
             print("Error: Root privileges required.")
             exit(1)
+
+        self.unacked     = {}   # {seq_num: {"packet": bytes, "sent_time": float}}
+        self.base        = 1    # left edge of the window — the next ACK we expect
+        self.window_lock = threading.Lock() 
+        self.transfer_done = threading.Event() # Event that listen_for_acks() sets when the transfer is fully acknowledged
+        self.dest_port = 0          # client port
+        self.total_packets = 0      # total number of file chunks 
 
     def wait_for_request(self):
         """
@@ -55,14 +67,108 @@ class SRFT_UDPServer:
                 return payload_string, src_ip, src_port
 
     def listen_for_acks(self):
-        # TODO: Implement background thread to receive and parse ACKs
-        # RECV
-        pass
+        while not self.transfer_done.is_set():
+            try:
+                self.recv_sock.settimeout(1.0)   # unblocks periodically so we can check the event
+                raw_bytes, _ = self.recv_sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+ 
+            src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack_num, payload = parse_packet(raw_bytes)
+ 
+            # Filter: must be addressed to us and be an ACK packet
+            if dst_port != self.server_port or p_type != TYPE_ACK:
+                continue
+ 
+            print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")
+ 
+            with self.window_lock:
+                # Remove every packet whose seq_num <= ack_num from the unacked dict.
+                # These are now safely delivered — no need to retransmit them.
+                for seq_num in list(self.unacked.keys()):
+                    if seq_num <= ack_num:
+                        del self.unacked[seq_num]
+ 
+                # Advance the window base
+                if ack_num >= self.base:
+                    self.base = ack_num + 1
+ 
+                self.stats["acks_received"] += 1
+ 
+            # If the base has moved past all packets, the entire file is acknowledged
+            if self.base > self.total_packets:
+                self.transfer_done.set()
 
-    def send_file(self, filename, dest_ip):
-        # TODO: Implement segmentation and timeout retransmission
-        # RETRANSMISSION TIMER
-        pass
+    def send_file(self, filename, dest_ip, dest_port):
+        if not os.path.exists(filename):
+            print(f"[SERVER] Error: file '{filename}' not found.")
+            return
+ 
+        with open(filename, 'rb') as f:
+            file_data = f.read()
+ 
+        chunks        = [file_data[i: i + CHUNK_SIZE] for i in range(0, len(file_data), CHUNK_SIZE)]
+        total_packets = len(chunks)
+ 
+        self.stats["filename"]   = filename
+        self.stats["filesize"]   = len(file_data)
+        self.stats["start_time"] = time.time()
+
+        self.dest_port = dest_port
+        self.total_packets = total_packets
+ 
+        print(f"[SERVER] Sending '{filename}' | {len(file_data)} bytes | {total_packets} packets")
+ 
+        # Reset sliding window state
+        self.base            = 1
+        self.unacked         = {}
+        self.transfer_done.clear()
+ 
+        # Start ACK listener thread
+        ack_thread = threading.Thread(target=self.listen_for_acks, daemon=True)
+        ack_thread.start()
+ 
+        next_seq = 1   # next sequence number to send
+ 
+        # Main loop: continue until all packets are acknowledged
+        while not self.transfer_done.is_set():
+            # Send new packets as long as there is space in the window and there are still packets left to send
+            with self.window_lock:
+                while next_seq <= total_packets and next_seq < self.base + WINDOW_SIZE:
+                    chunk  = chunks[next_seq - 1]   # seq numbers start at 1, list index at 0
+                    packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
+                                           dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA) 
+                    self.send_sock.sendto(packet, (dest_ip, 0))
+ 
+                    # Record packet in unacked dict so we can retransmit if needed
+                    self.unacked[next_seq] = {
+                        "packet"    : packet,
+                        "sent_time" : time.time()
+                    }
+ 
+                    self.stats["packets_sent"] += 1
+                    print(f"[SERVER] Sent packet seq={next_seq}")
+                    next_seq += 1
+ 
+            # Check every unacknowledged packet — if its timer has expired, resend it
+            now = time.time()
+            with self.window_lock:
+                for seq_num, info in list(self.unacked.items()):
+                    if now - info["sent_time"] > TIMEOUT:
+                        self.send_sock.sendto(info["packet"], (dest_ip, 0))
+                        self.unacked[seq_num]["sent_time"] = now   # reset the timer
+                        self.stats["retransmitted"] += 1
+                        print(f"[SERVER] Timeout — retransmitting packet seq={seq_num}")
+ 
+            time.sleep(0.01)
+ 
+        # Send FIN packet to indicate end of transfer
+        fin_packet = build_packet(data=b'', seq_num=next_seq, ack_num=0, src_ip=self.server_ip, 
+                                  dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_FIN)
+        self.send_sock.sendto(fin_packet, (dest_ip, 0))
+        print("[SERVER] FIN packet sent — transfer complete.")
+ 
+        ack_thread.join(timeout=5)
 
     def generate_output_report(self):
         # Calculate the transfer duration
@@ -70,7 +176,8 @@ class SRFT_UDPServer:
         duration_formatted = time.strftime('%H:%M:%S', time.gmtime(duration_seconds))
 
         # Define the output filename
-        report_name = f"transfer_report_{self.stats['filename']}.txt"
+        base_name = self.stats['filename'].rsplit('.', 1)[0]
+        report_name = f"transfer_report_{base_name}.txt"
 
         with open(report_name, 'w') as f:
             f.write(f"Name of the transferred file: {self.stats['filename']}\n")
@@ -94,5 +201,7 @@ if __name__ == "__main__":
     print(f"Payload: {payload_string}")
     print(f"client ip: {client_ip}")
     print(f"client port: {client_port}")
+
+    server.send_file(payload_string, client_ip, client_port)
 
     server.generate_output_report()

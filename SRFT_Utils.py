@@ -5,6 +5,7 @@ import struct
 TYPE_DATA = 0
 TYPE_ACK = 1
 TYPE_REQ = 2  # packet type used when the client requests a file
+TYPE_FIN = 3  # packet type used to indicate the end of a file transfer
 
 
 def build_packet(data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_type=0):
