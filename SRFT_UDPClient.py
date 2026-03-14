@@ -1,10 +1,5 @@
 import socket
-import struct
-
-# types for header
-TYPE_DATA = 0
-TYPE_ACK = 1
-TYPE_REQ = 2
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, build_packet
 
 # example ips and ports
 SERVER_IP = "127.0.0.1"
@@ -27,41 +22,6 @@ class SRFT_UDPClient:
         except PermissionError:
             print("root privileges required")
             exit(1)
-
-    def build_packet(self, data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_type=0):
-        """
-        Constructs full packet from scratch
-        Structure: [IP Header] + [UDP Header] + [SRFT Header] + [File Data]
-        """
-
-        # 1: SRFT PROTOCOL HEADER
-        # Format explanation for struct.pack('!B H I I'):
-        # ! = Network byte order (Big-endian)
-        # B = Type (1 byte: 0 for Data, 1 for ACK)
-        # H = Checksum (2 bytes: initially set to 0)
-        # I = Sequence Number (4 bytes)
-        # I = Acknowledgement Number (4 bytes)
-
-        # NOTE FOR TEAM: Replace the '0' with the actual checksum function
-
-        srft_header = struct.pack('!B H I I', p_type, 0, seq_num, ack_num)
-
-        # 2: UDP HEADER
-        # Fields: Source Port, Dest Port, Total Length (Header + Data), Checksum
-        # Total length = 8 bytes (UDP) + 11 bytes (SRFT) + actual data length
-        udp_len = 8 + len(srft_header) + len(data)
-        udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, 0)
-
-        # 3: IP HEADER
-        # Standard IPv4 header construction
-        # Includes Version, IHL, Total Length, ID, TTL, Protocol (17 for UDP)
-        # NOTE: Src/Dst IP addresses should be updated for AWS testing
-        ip_header = struct.pack('!BBHHHBBH4s4s',
-                                69, 0, 20 + udp_len, 54321, 0, 64, 17, 0,
-                                socket.inet_aton(src_ip), socket.inet_aton(dst_ip))
-
-        # Combine all parts into one raw byte stream
-        return ip_header + udp_header + srft_header + data
     
     def request_file(self, filename):
         """
@@ -71,7 +31,7 @@ class SRFT_UDPClient:
         payload = filename.encode()
 
         # build packet
-        packet = self.build_packet(data=payload, seq_num=0, ack_num=0, src_ip=self.client_ip, dst_ip=self.server_ip, 
+        packet = build_packet(data=payload, seq_num=0, ack_num=0, src_ip=self.client_ip, dst_ip=self.server_ip, 
                                    src_port=self.client_port, dst_port=self.server_port, p_type=TYPE_REQ)
         
         #print line for testing
