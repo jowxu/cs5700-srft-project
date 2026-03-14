@@ -129,6 +129,24 @@ class SRFT_UDPServer:
         # RETRANSMISSION TIMER
         pass
 
+    def generate_output_report(self):
+        # Calculate the transfer duration
+        duration_seconds = int(time.time() - self.stats["start_time"])
+        duration_formatted = time.strftime('%H:%M:%S', time.gmtime(duration_seconds))
+
+        # Define the output filename
+        report_name = f"transfer_report_{self.stats['filename']}.txt"
+
+        with open(report_name, 'w') as f:
+            f.write(f"Name of the transferred file: {self.stats['filename']}\n")
+            f.write(f"Size of the transferred file: {self.stats['filesize']}\n")
+            f.write(f"The number of packets sent from the server: {self.stats['packets_sent']}\n")
+            f.write(f"The number of retransmitted packets from the server: {self.stats['retransmitted']}\n")
+            f.write(f"The number of packets received from the client: {self.stats['acks_received']}\n")
+            f.write(f"The time duration of the file transfer (hh:min:ss): {duration_formatted}\n")
+
+        print(f"Summary report generated: {report_name}")
+
 if __name__ == "__main__":
     server = SRFT_UDPServer()
 
@@ -141,3 +159,5 @@ if __name__ == "__main__":
     print(f"Payload: {payload_string}")
     print(f"client ip: {client_ip}")
     print(f"client port: {client_port}")
+
+    server.generate_output_report()
