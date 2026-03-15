@@ -30,7 +30,9 @@ def build_packet(data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_t
     # Fields: Source Port, Dest Port, Total Length (Header + Data), Checksum
     # Total length = 8 bytes (UDP) + 11 bytes (SRFT) + actual data length
     udp_len = 8 + len(srft_header) + len(data)
-    udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, 0)
+    temp_udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, 0)
+    checksum = udp_checksum_calc(temp_udp_header, data)
+    udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, checksum)
 
     # 3: IP HEADER
     # Standard IPv4 header construction
@@ -68,3 +70,19 @@ def parse_packet(raw_bytes):
     payload = raw_bytes[srft_start + 11: udp_start + udp_len]  # udp length includes the header
 
     return src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload
+
+def udp_checksum_calc(udp_header, data): #udp_header is the header object with 0 in place of checksum
+        packet = udp_header + data
+
+        # if len is odd
+        if len(packet) % 2 != 0:
+            packet += b'\x00'
+        # calculate one's complement sum
+        sum = 0
+        for i in range(0, len(packet), 2):
+            w = (packet[i] << 8) + packet[i+1]
+            temp = sum + w
+            sum = (temp & 0xffff) + (temp >> 16)
+    
+        checksum_val = ~sum & 0xffff
+        return checksum_val
