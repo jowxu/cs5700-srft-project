@@ -40,6 +40,7 @@ class SRFT_UDPServer:
         self.transfer_done = threading.Event() # Event that listen_for_acks() sets when the transfer is fully acknowledged
         self.dest_port = 0          # client port
         self.total_packets = 0      # total number of file chunks 
+        self.ack_thread = None
 
     def wait_for_request(self):
         """
@@ -65,6 +66,24 @@ class SRFT_UDPServer:
                 print(f"received file request: '{payload_string}' from {src_ip}:{src_port}")
 
                 return payload_string, src_ip, src_port
+    
+    def start_ack_thread(self):
+        """
+        helper function that starts the thread that listens for ack.
+        """
+        self.transfer_done.clear()
+        self.ack_thread = threading.Thread(target=self.listen_for_acks, daemon=True)
+        self.ack_thread.start()
+
+    def stop_ack_thread(self):
+        """
+        helper function that stops the thread that listens for ack.
+        """
+        self.transfer_done.set()
+
+        if self.ack_thread is not None:
+            self.ack_thread.join(timeout=5)
+            self.ack_thread = None
 
     def listen_for_acks(self):
         while not self.transfer_done.is_set():
@@ -122,11 +141,9 @@ class SRFT_UDPServer:
         # Reset sliding window state
         self.base            = 1
         self.unacked         = {}
-        self.transfer_done.clear()
  
         # Start ACK listener thread
-        ack_thread = threading.Thread(target=self.listen_for_acks, daemon=True)
-        ack_thread.start()
+        self.start_ack_thread()
  
         next_seq = 1   # next sequence number to send
  
@@ -167,8 +184,9 @@ class SRFT_UDPServer:
                                   dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_FIN)
         self.send_sock.sendto(fin_packet, (dest_ip, 0))
         print("[SERVER] FIN packet sent — transfer complete.")
- 
-        ack_thread.join(timeout=5)
+
+        # stop ack thread listener
+        self.stop_ack_thread()
 
     def generate_output_report(self):
         # Calculate the transfer duration
