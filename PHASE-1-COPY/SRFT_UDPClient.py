@@ -2,9 +2,9 @@ import socket
 from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
 
 # example ips and ports
-SERVER_IP = "127.0.0.1"
+SERVER_IP = "172.31.43.77"
 SERVER_PORT = 8080
-CLIENT_IP = "127.0.0.1"
+CLIENT_IP = "172.31.36.216"
 CLIENT_PORT = 9000
 
 ACK_EVERY = 5

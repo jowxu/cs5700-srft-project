@@ -22,7 +22,7 @@ class SRFT_UDPServer:
 
         # config server port and ip
         self.server_port = 8080
-        self.server_ip = "127.0.0.1" # loopback ip, can change to other viable ip's
+        self.server_ip = "172.31.43.77" # loopback ip, can change to other viable ip's
 
         try:
             # Using IPPROTO_RAW to manually build IP headers
