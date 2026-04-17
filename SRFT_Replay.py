@@ -1,26 +1,30 @@
 class ReplayWindow:
     """
-    replay protection for one transfer session
+    Sliding window for replay protection.
 
-    当前版本先按单 session 使用
-    后续 phase 2 可以再加 session_id manager
+    Tracks received sequence numbers and ensures:
+    - Duplicate packets are rejected
+    - Out-of-window packets are rejected
+    - In-order delivery can be reconstructed
     """
 
     def __init__(self, window_size=128):
         self.window_size = window_size
 
-        # 已连续交付的最大 seq
+        # Highest contiguous sequence number delivered
         self.max_delivered = 0
 
-        # 已收到但还未连续交付的 seq
+        # Set of received but not yet delivered sequence numbers
         self.buffered = set()
 
     def check(self, seq: int) -> str:
         """
-        return:
-            accept
-            duplicate
-            out_of_window
+        Check the status of a sequence number.
+
+        Returns:
+            "accept"         → valid new packet
+            "duplicate"      → already received or delivered
+            "out_of_window"  → beyond current window
         """
         if seq <= self.max_delivered:
             return "duplicate"
@@ -34,26 +38,34 @@ class ReplayWindow:
         return "accept"
 
     def mark_received(self, seq: int):
+        """
+        Mark a sequence number as received.
+        """
         self.buffered.add(seq)
 
     def advance(self):
+        """
+        Advance the window if the next expected sequence is available.
+        This ensures contiguous delivery.
+        """
         next_seq = self.max_delivered + 1
+
         while next_seq in self.buffered:
             self.buffered.remove(next_seq)
             self.max_delivered = next_seq
             next_seq += 1
 
-    def check_and_mark(self, seq: int) -> str:
-        status = self.check(seq)
-        if status == "accept":
-            self.mark_received(seq)
-            self.advance()
-        return status
-
     def expected_seq(self) -> int:
+        """
+        Return the next expected in-order sequence number.
+        Used for cumulative ACK.
+        """
         return self.max_delivered + 1
 
     def debug_state(self):
+        """
+        Return internal state for debugging.
+        """
         return {
             "max_delivered": self.max_delivered,
             "buffered": sorted(self.buffered),
