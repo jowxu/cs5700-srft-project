@@ -193,7 +193,6 @@ class SRFT_UDPServer:
 
         # stop ack thread listener
         self.stop_ack_thread()
-        self.wait_for_fin_ack(dest_ip, dest_port) 
 
     def generate_output_report(self):
         # Calculate the transfer duration
