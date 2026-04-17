@@ -1,5 +1,7 @@
 import socket
 from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
+from Security import decrypt_payload
+from cryptography.exceptions import InvalidTag
 
 # example ips and ports
 SERVER_IP = "127.0.0.1"
@@ -56,7 +58,7 @@ class SRFT_UDPClient:
         self.send_sock.sendto(ack_packet, (self.server_ip, 0))
         print(f"cumulative ACK sent: ack_num = {ack_num}")
  
-    def receive_file(self, output_filename):
+    def receive_file(self, output_filename, enc_key=None, session_id=None):
         """
         Receives DATA packets from the server, reassembles the file in order, and sends cumulative ACKs back.
         """
@@ -89,10 +91,22 @@ class SRFT_UDPClient:
                 # Duplicate detection 
                 if seq in received_seqs:
                     print(f"duplicate packet discarded: seq={seq}")
+                    self.send_cumulative_ack(expected_seq - 1) 
                     continue
  
                 # mark this sequence number as seen
                 received_seqs.add(seq)
+
+                # if enc_key is provided decrypt the payload
+                # if authentication fails → drop the packet and increment counter
+                # if enc_key is None use payload as-is
+                if enc_key is not None:
+                    try:
+                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
+                    except InvalidTag:
+                        print(f"AEAD authentication failed — dropping packet seq={seq}")
+                        received_seqs.discard(seq)  # remove from seen so retransmit can succeed
+                        continue
  
                 # store in buffer keyed by sequence number
                 recv_buffer[seq] = payload
@@ -109,13 +123,11 @@ class SRFT_UDPClient:
                 if ack_counter >= ACK_EVERY:
                     self.send_cumulative_ack(expected_seq - 1)
                     ack_counter = 0
-                elif len(recv_buffer) == 0:
-                    self.send_cumulative_ack(expected_seq - 1)
-                    ack_counter = 0
+                
  
         print(f"file saved as '{output_filename}'")
 
-    def run(self, filename):
+    def run(self, filename, enc_key=None, session_id=None):
         """
          Full client workflow:
             1. Send file request to server
@@ -123,7 +135,7 @@ class SRFT_UDPClient:
         """
         output_filename = f"received_{filename}"
         self.request_file(filename)
-        self.receive_file(output_filename)
+        self.receive_file(output_filename, enc_key=enc_key, session_id=session_id)
 
 
 if __name__ == "__main__":

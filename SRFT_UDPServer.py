@@ -3,6 +3,8 @@ import os
 import threading
 import time
 from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
+from Security import encrypt_payload
+from cryptography.exceptions import InvalidTag
 
 # Sliding window specifications
 WINDOW_SIZE  = 16 
@@ -118,7 +120,7 @@ class SRFT_UDPServer:
             if self.base > self.total_packets:
                 self.transfer_done.set()
 
-    def send_file(self, filename, dest_ip, dest_port):
+    def send_file(self, filename, dest_ip, dest_port, enc_key=None, session_id=None):
         if not os.path.exists(filename):
             print(f"[SERVER] Error: file '{filename}' not found.")
             return
@@ -153,6 +155,10 @@ class SRFT_UDPServer:
             with self.window_lock:
                 while next_seq <= total_packets and next_seq < self.base + WINDOW_SIZE:
                     chunk  = chunks[next_seq - 1]   # seq numbers start at 1, list index at 0
+                    # if enc_key is provided encrypt the chunk before sending
+                    # if enc_key is None (Phase 1) send plaintext as before
+                    if enc_key is not None:
+                        chunk = encrypt_payload(enc_key, session_id, next_seq, 0, TYPE_DATA, chunk)
                     packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
                                            dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA) 
                     self.send_sock.sendto(packet, (dest_ip, 0))
