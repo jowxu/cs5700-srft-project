@@ -1,5 +1,6 @@
 import socket
 import struct
+import hashlib
 
 # packet types
 TYPE_DATA = 0
@@ -86,3 +87,14 @@ def udp_checksum_calc(udp_header, data): #udp_header is the header object with 0
     
         checksum_val = ~sum & 0xffff
         return checksum_val
+
+def calc_file_digest_bytes(file_bytes):
+    return hashlib.sha256(file_bytes).hexdigest()
+
+def calc_file_digest_path(file_path):
+    file_bytes = open(file_bytes, "rb").read()
+    return calc_file_digest_bytes(file_bytes)
+
+def verify_file_digest(file_path, expected_digest):
+    actual_digest = calc_file_digest_path(file_path)
+    return actual_digest == expected_digest
