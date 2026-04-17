@@ -1,6 +1,7 @@
 import socket
 from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
 from Security import decrypt_payload
+from SRFT_Replay import ReplayWindow
 from cryptography.exceptions import InvalidTag
 
 # example ips and ports
@@ -57,74 +58,87 @@ class SRFT_UDPClient:
         
         self.send_sock.sendto(ack_packet, (self.server_ip, 0))
         print(f"cumulative ACK sent: ack_num = {ack_num}")
- 
+
     def receive_file(self, output_filename, enc_key=None, session_id=None):
         """
-        Receives DATA packets from the server, reassembles the file in order, and sends cumulative ACKs back.
+        Receive DATA packets, perform AEAD validation, apply replay protection,
+        reassemble file in order, and send cumulative ACKs.
         """
-        recv_buffer = {}        # {seq_num: payload} — out of order packets
-        received_seqs = set()   # duplicate detection
-        expected_seq = 1        # next sequence number to write to file
-        ack_counter = 0         # counts packets received since last ACK
- 
+
+        recv_buffer = {}  # buffer for out-of-order packets
+        replay = ReplayWindow(128)  # sliding replay window
+        ack_counter = 0  # ACK batching counter
+        replay_drops = 0  # replay drop counter
+        aead_failures = 0  # AEAD auth failure counter
+
         print(f"waiting to receive file, will save as '{output_filename}'")
- 
+
         with open(output_filename, 'wb') as out_file:
             while True:
                 raw_bytes, _ = self.recv_sock.recvfrom(65535)
                 src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload = parse_packet(raw_bytes)
- 
-                # only process packets addressed to this client port
+
+                # ignore packets not destined for this client port
                 if dst_port != self.client_port:
                     continue
- 
-                # FIN: server is done sending — send final ACK and stop
+
+                # handle transfer completion
                 if p_type == TYPE_FIN:
                     print("FIN received — transfer complete")
-                    self.send_cumulative_ack(expected_seq - 1)
+                    self.send_cumulative_ack(replay.expected() - 1)
+                    print(f"Replay drops: {replay_drops}")
+                    print(f"AEAD authentication failures: {aead_failures}")
                     break
- 
-                # only process DATA packets beyond this point
+
+                # process only DATA packets
                 if p_type != TYPE_DATA:
                     continue
- 
-                # Duplicate detection 
-                if seq in received_seqs:
-                    print(f"duplicate packet discarded: seq={seq}")
-                    self.send_cumulative_ack(expected_seq - 1) 
-                    continue
- 
-                # mark this sequence number as seen
-                received_seqs.add(seq)
 
-                # if enc_key is provided decrypt the payload
-                # if authentication fails → drop the packet and increment counter
-                # if enc_key is None use payload as-is
+                # AEAD decryption and authentication
                 if enc_key is not None:
                     try:
                         payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
                     except InvalidTag:
                         print(f"AEAD authentication failed — dropping packet seq={seq}")
-                        received_seqs.discard(seq)  # remove from seen so retransmit can succeed
+                        aead_failures += 1
                         continue
- 
-                # store in buffer keyed by sequence number
+
+                # replay protection (after successful decryption)
+                status = replay.check(seq)
+
+                if status == "duplicate":
+                    replay_drops += 1
+                    print(f"replay duplicate dropped: seq={seq}")
+                    self.send_cumulative_ack(replay.expected() - 1)
+                    continue
+
+                if status == "out_of_window":
+                    replay_drops += 1
+                    print(f"replay out-of-window dropped: seq={seq}")
+                    self.send_cumulative_ack(replay.expected() - 1)
+                    continue
+
+                # accept packet and buffer it
+                replay.mark(seq)
                 recv_buffer[seq] = payload
                 print(f"received packet seq={seq}")
- 
-                # write any contiguous sequence of packets starting from expected_seq
-                while expected_seq in recv_buffer:
-                    out_file.write(recv_buffer.pop(expected_seq))
-                    print(f"written to file: seq={expected_seq}")
-                    expected_seq += 1
- 
+
+                # write all contiguous packets to file
+                while replay.expected() in recv_buffer:
+                    next_seq = replay.expected()
+                    out_file.write(recv_buffer.pop(next_seq))
+                    print(f"written to file: seq={next_seq}")
+                    replay.advance()
+
                 # send cumulative ACK (batched)
                 ack_counter += 1
                 if ack_counter >= ACK_EVERY:
-                    self.send_cumulative_ack(expected_seq - 1)
+                    self.send_cumulative_ack(replay.expected() - 1)
                     ack_counter = 0
-                
- 
+                elif len(recv_buffer) == 0:
+                    self.send_cumulative_ack(replay.expected() - 1)
+                    ack_counter = 0
+
         print(f"file saved as '{output_filename}'")
 
     def run(self, filename, enc_key=None, session_id=None):
