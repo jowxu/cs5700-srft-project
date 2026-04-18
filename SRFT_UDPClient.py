@@ -1,5 +1,5 @@
 import socket
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, calc_file_digest_path
 from Security import decrypt_payload
 from cryptography.exceptions import InvalidTag
 
@@ -66,6 +66,7 @@ class SRFT_UDPClient:
         received_seqs = set()   # duplicate detection
         expected_seq = 1        # next sequence number to write to file
         ack_counter = 0         # counts packets received since last ACK
+        received_digest = ""    # reset received digest
  
         print(f"waiting to receive file, will save as '{output_filename}'")
  
@@ -81,6 +82,17 @@ class SRFT_UDPClient:
                 # FIN: server is done sending — send final ACK and stop
                 if p_type == TYPE_FIN:
                     print("FIN received — transfer complete")
+
+                    # decrypt fin payload if security is enabled
+                    if enc_key is not None:
+                        try:
+                            payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
+                        except InvalidTag:
+                            print("AEAD authentication failed for FIN packet — transfer cancelled")
+                            return
+                    
+                    received_digest = payload.decode(errors="ignore").strip()
+
                     self.send_cumulative_ack(expected_seq - 1)
                     break
  
@@ -124,7 +136,16 @@ class SRFT_UDPClient:
                     self.send_cumulative_ack(expected_seq - 1)
                     ack_counter = 0
                 
- 
+        # calculate local file digest
+        local_digest = calc_file_digest_path(output_filename)
+        # compare digests
+        print(f"received digest: {received_digest}")
+        print(f"local digest: {local_digest}")
+        if local_digest == received_digest:
+            print("digest match: file integrity verified")
+        else:
+            print("digest mismatch: file integrity compromised")
+
         print(f"file saved as '{output_filename}'")
 
     def run(self, filename, enc_key=None, session_id=None):
