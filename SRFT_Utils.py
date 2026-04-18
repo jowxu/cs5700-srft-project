@@ -92,7 +92,8 @@ def calc_file_digest_bytes(file_bytes):
     return hashlib.sha256(file_bytes).hexdigest()
 
 def calc_file_digest_path(file_path):
-    file_bytes = open(file_bytes, "rb").read()
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
     return calc_file_digest_bytes(file_bytes)
 
 def verify_file_digest(file_path, expected_digest):

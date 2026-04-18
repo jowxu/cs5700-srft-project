@@ -2,7 +2,7 @@ import socket
 import os
 import threading
 import time
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, calc_file_digest_bytes
 from Security import encrypt_payload
 from cryptography.exceptions import InvalidTag
 
@@ -127,6 +127,9 @@ class SRFT_UDPServer:
  
         with open(filename, 'rb') as f:
             file_data = f.read()
+
+        # calculate the digest of the file data
+        file_digest = calc_file_digest_bytes(file_data)
  
         chunks        = [file_data[i: i + CHUNK_SIZE] for i in range(0, len(file_data), CHUNK_SIZE)]
         total_packets = len(chunks)
@@ -185,8 +188,15 @@ class SRFT_UDPServer:
  
             time.sleep(0.01)
  
+        # place file digest in fin payload
+        fin_payload = file_digest.encode()
+
+        # encrypt the payload if security is enabled
+        if enc_key is not None:
+            fin_payload = encrypt_payload(enc_key, session_id, next_seq, 0, TYPE_FIN, fin_payload)
+
         # Send FIN packet to indicate end of transfer
-        fin_packet = build_packet(data=b'', seq_num=next_seq, ack_num=0, src_ip=self.server_ip, 
+        fin_packet = build_packet(data=fin_payload, seq_num=next_seq, ack_num=0, src_ip=self.server_ip, 
                                   dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_FIN)
         self.send_sock.sendto(fin_packet, (dest_ip, 0))
         print("[SERVER] FIN packet sent — transfer complete.")
