@@ -56,15 +56,19 @@ class SRFT_UDPServer:
             # parse packet and fill in variables
             src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload = parse_packet(raw_bytes)
 
-            # discard if checksum doesnt match
-            if not confirm_checksum(p_type, checksum, seq, ack, payload):
-                print("checksum did not match: corrupted request packet discarded")
-                continue
-
             # If port and server port dont match, ignore packet
             if dst_port != self.server_port:
                 continue
 
+            # ignore non req packet types
+            if p_type != TYPE_REQ:
+                continue
+
+            # discard if checksum doesnt match
+            if not confirm_checksum(p_type, checksum, seq, ack, payload):
+                print("[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
+                continue
+            
             # check type, make sure it is a request type packet
             if p_type == TYPE_REQ:
                 #convert payload from bytes to string
@@ -101,14 +105,14 @@ class SRFT_UDPServer:
                 continue
  
             src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack_num, payload = parse_packet(raw_bytes)
-
-            # checksum confrimation
-            if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
-                print("checksum mismatch: corrupted ACK packet discarded")
-                continue
  
             # Filter: must be addressed to us and be an ACK packet
             if dst_port != self.server_port or p_type != TYPE_ACK:
+                continue
+
+            # checksum confrimation
+            if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
+                print("[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
                 continue
  
             print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")

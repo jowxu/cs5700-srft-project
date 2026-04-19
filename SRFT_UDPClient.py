@@ -89,13 +89,17 @@ class SRFT_UDPClient:
                             received_seqs.discard(seq)
                         continue
 
+                # only process packets addressed to this client port
+                if dst_port != self.client_port:
+                    continue
+
+                # ignore unexpected packet types
+                if p_type not in (TYPE_DATA, TYPE_FIN):
+                    continue
+
                 # confirm checksum for corruption
                 if not confirm_checksum(p_type, checksum, seq, ack, payload):
                     print(f"corrupted packet discarded: seq={seq}")
-                    continue
- 
-                # only process packets addressed to this client port
-                if dst_port != self.client_port:
                     continue
  
                 # FIN: server is done sending — send final ACK and stop
