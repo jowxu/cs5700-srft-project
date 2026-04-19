@@ -1,12 +1,13 @@
 import socket
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, calc_file_digest_path
+import sys
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, calc_file_digest_path, confirm_checksum
 from Security import decrypt_payload
 from cryptography.exceptions import InvalidTag
 
 # example ips and ports
-SERVER_IP = "127.0.0.1"
+SERVER_IP = "172.31.43.77"
 SERVER_PORT = 8080
-CLIENT_IP = "127.0.0.1"
+CLIENT_IP = "172.31.36.216"
 CLIENT_PORT = 9000
 
 ACK_EVERY = 5
@@ -74,6 +75,24 @@ class SRFT_UDPClient:
             while True:
                 raw_bytes, _ = self.recv_sock.recvfrom(65535)
                 src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload = parse_packet(raw_bytes)
+
+                # decrypt package when security is enabled
+                # if enc_key is provided decrypt the payload
+                # if authentication fails → drop the packet and increment counter
+                # if enc_key is None use payload as-is
+                if enc_key is not None and p_type in (TYPE_DATA, TYPE_FIN):
+                    try:
+                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
+                    except InvalidTag:
+                        print(f"AEAD authentication failed — dropping packet seq={seq}")
+                        if p_type == TYPE_DATA:
+                            received_seqs.discard(seq)
+                        continue
+
+                # confirm checksum for corruption
+                if not confirm_checksum(p_type, checksum, seq, ack, payload):
+                    print(f"corrupted packet discarded: seq={seq}")
+                    continue
  
                 # only process packets addressed to this client port
                 if dst_port != self.client_port:
@@ -82,17 +101,7 @@ class SRFT_UDPClient:
                 # FIN: server is done sending — send final ACK and stop
                 if p_type == TYPE_FIN:
                     print("FIN received — transfer complete")
-
-                    # decrypt fin payload if security is enabled
-                    if enc_key is not None:
-                        try:
-                            payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
-                        except InvalidTag:
-                            print("AEAD authentication failed for FIN packet — transfer cancelled")
-                            return
-                    
                     received_digest = payload.decode(errors="ignore").strip()
-
                     self.send_cumulative_ack(expected_seq - 1)
                     break
  
@@ -109,17 +118,6 @@ class SRFT_UDPClient:
                 # mark this sequence number as seen
                 received_seqs.add(seq)
 
-                # if enc_key is provided decrypt the payload
-                # if authentication fails → drop the packet and increment counter
-                # if enc_key is None use payload as-is
-                if enc_key is not None:
-                    try:
-                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
-                    except InvalidTag:
-                        print(f"AEAD authentication failed — dropping packet seq={seq}")
-                        received_seqs.discard(seq)  # remove from seen so retransmit can succeed
-                        continue
- 
                 # store in buffer keyed by sequence number
                 recv_buffer[seq] = payload
                 print(f"received packet seq={seq}")
@@ -162,5 +160,10 @@ class SRFT_UDPClient:
 if __name__ == "__main__":
     client = SRFT_UDPClient()
 
-    filename = "test1.txt"
+    # take user input for file path
+    if len(sys.argv) != 2:
+        print("use correct command (replacing <filename> with the correct file path): python3 SRFT_UDPClient.py <filename>")
+        sys.exit(1)
+    
+    filename = sys.argv[1]
     client.run(filename)
