@@ -1,8 +1,13 @@
 import socket
 import sys
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, calc_file_digest_path, confirm_checksum
+import secrets
+import hmac
+import hashlib
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, PSK, build_packet, parse_packet, parse_server_hello, calc_file_digest_path, confirm_checksum
 from Security import decrypt_payload
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 # example ips and ports
 SERVER_IP = "172.31.43.77"
@@ -153,12 +158,39 @@ class SRFT_UDPClient:
     def run(self, filename, enc_key=None, session_id=None):
         """
          Full client workflow:
-            1. Send file request to server
-            2. Receive and reassemble the file
+            1. Send client hello
+            2. Receive server hello & derive session key
+            3. Send file request to server
+            4. Receive and reassemble the file
         """
         output_filename = f"received_{filename}"
+
+        # construct client hello
+        nonce_client = secrets.token_bytes(16)
+        protocol_version = "placeholder" #REPLACE with actual
+        msg = {nonce_client, protocol_version}
+        hmac_client = hmac.digest(PSK, msg, hashlib.sha256)
+        hello = (nonce_client, protocol_version, hmac_client)
+
+        # send client hello
+        self.send_sock.sendto(hello, (self.server_ip, 0))
+        # receive server hello
+        raw_bytes, _ = self.recv_sock.recvfrom(1024)
+        nonce_server, server_session_id, hmac_server = parse_server_hello(raw_bytes)
+        # verify server hello
+        server_msg = {nonce_server, session_id}
+        hmac_calc = hmac.digest(PSK, server_msg, hashlib.sha256)
+        verified = hmac.compare_digest(hmac_server, hmac_calc)
+        if (verified is False):
+            return 1
+        
+        # derive session key with HKDF put in enc_key
+        hkdf = HKDF(algorithm=hashes.SHA256(), length=32, info=b'')
+        enc_key = hkdf.derive()
+        
         self.request_file(filename)
-        self.receive_file(output_filename, enc_key=enc_key, session_id=session_id)
+        self.receive_file(output_filename, enc_key=enc_key, session_id=server_session_id)
+        return 0
 
 
 if __name__ == "__main__":
@@ -170,4 +202,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     filename = sys.argv[1]
-    client.run(filename)
+    result = client.run(filename)
+    if (result == 1) :
+        print("handshake connection not verified")
+        sys.exit(1)

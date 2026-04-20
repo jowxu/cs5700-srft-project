@@ -1,6 +1,7 @@
 import socket
 import struct
 import hashlib
+import secrets
 
 # packet types
 TYPE_DATA = 0
@@ -8,6 +9,8 @@ TYPE_ACK = 1
 TYPE_REQ = 2  # packet type used when the client requests a file
 TYPE_FIN = 3  # packet type used to indicate the end of a file transfer
 
+# pre-shared key
+PSK = secrets.token_bytes(32)
 
 def build_packet(data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_type=0):
     """
@@ -71,6 +74,32 @@ def parse_packet(raw_bytes):
     payload = raw_bytes[srft_start + 11: udp_start + udp_len]  # udp length includes the header
 
     return src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload
+
+def parse_client_hello(raw_bytes):
+    # 16 bytes - nonce
+    # UDP as bytes
+    # 32 bytes - because of sha256
+    """
+    Parses client handshake hello
+    """
+    start = (raw_bytes[0] & 0x0F) * 4
+    nonce = raw_bytes[start:start+15] 
+    protocol_version = raw_bytes[start+15:start+18]
+    hmac = raw_bytes[start+18: start+50]
+    return nonce, protocol_version, hmac
+
+def parse_server_hello(raw_bytes):
+    # 16 bytes - nonce
+    # 8 byte - session id
+    # 32 bytes - because of sha256
+    """
+    Parses server handshake hello
+    """
+    start = (raw_bytes[0] & 0x0F) * 4
+    nonce = raw_bytes[start:start+15] 
+    session_id = raw_bytes[start+15:start+23]
+    hmac = raw_bytes[start+23: start+55]
+    return nonce, session_id, hmac
 
 def checksum_calc(header_bytes, data): #header_bytes is the header object with 0 in place of checksum
         packet = header_bytes + data
