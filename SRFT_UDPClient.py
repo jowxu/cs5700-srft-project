@@ -1,14 +1,14 @@
 import socket
 import sys
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, calc_file_digest_path, confirm_checksum
+import secrets
+import hmac
+import hashlib
+from SRFT_Config import SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT, PSK
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_server_hello, calc_file_digest_path, confirm_checksum
 from Security import decrypt_payload
 from cryptography.exceptions import InvalidTag
-
-# example ips and ports
-SERVER_IP = "172.31.43.77"
-SERVER_PORT = 8080
-CLIENT_IP = "172.31.36.216"
-CLIENT_PORT = 9000
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 ACK_EVERY = 5
 
@@ -76,19 +76,6 @@ class SRFT_UDPClient:
                 raw_bytes, _ = self.recv_sock.recvfrom(65535)
                 src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload = parse_packet(raw_bytes)
 
-                # decrypt package when security is enabled
-                # if enc_key is provided decrypt the payload
-                # if authentication fails → drop the packet and increment counter
-                # if enc_key is None use payload as-is
-                if enc_key is not None and p_type in (TYPE_DATA, TYPE_FIN):
-                    try:
-                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
-                    except InvalidTag:
-                        print(f"AEAD authentication failed — dropping packet seq={seq}")
-                        if p_type == TYPE_DATA:
-                            received_seqs.discard(seq)
-                        continue
-
                 # only process packets addressed to this client port
                 if dst_port != self.client_port:
                     continue
@@ -101,6 +88,19 @@ class SRFT_UDPClient:
                 if not confirm_checksum(p_type, checksum, seq, ack, payload):
                     print(f"corrupted packet discarded: seq={seq}")
                     continue
+
+                # decrypt package when security is enabled
+                # if enc_key is provided decrypt the payload
+                # if authentication fails → drop the packet and increment counter
+                # if enc_key is None use payload as-is
+                if enc_key is not None and p_type in (TYPE_DATA, TYPE_FIN):
+                    try:
+                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
+                    except InvalidTag:
+                        print(f"AEAD authentication failed — dropping packet seq={seq}")
+                        if p_type == TYPE_DATA:
+                            received_seqs.discard(seq)
+                        continue
  
                 # FIN: server is done sending — send final ACK and stop
                 if p_type == TYPE_FIN:
@@ -153,12 +153,49 @@ class SRFT_UDPClient:
     def run(self, filename, enc_key=None, session_id=None):
         """
          Full client workflow:
-            1. Send file request to server
-            2. Receive and reassemble the file
+            1. Send client hello
+            2. Receive server hello & derive session key
+            3. Send file request to server
+            4. Receive and reassemble the file
         """
         output_filename = f"received_{filename}"
+
+        # construct client hello
+        nonce_client = secrets.token_bytes(16)
+        protocol_version = b"v1 " #REPLACE with actual
+        client_msg = nonce_client + protocol_version
+        hmac_client = hmac.digest(PSK, client_msg, hashlib.sha256)
+        hello_payload = nonce_client + protocol_version + hmac_client
+        hello_packet = build_packet(
+            data=hello_payload,
+            seq_num=0,
+            ack_num=0,
+            src_ip=self.client_ip,
+            dst_ip=self.server_ip,
+            src_port=self.client_port,
+            dst_port=self.server_port,
+            p_type=TYPE_REQ
+        )
+        # send client hello
+        self.send_sock.sendto(hello_packet, (self.server_ip, 0))
+        # receive server hello
+        raw_bytes, _ = self.recv_sock.recvfrom(1024)
+        nonce_server, server_session_id, hmac_server = parse_server_hello(raw_bytes)
+        # verify server hello
+        server_msg = nonce_server + server_session_id
+        hmac_calc = hmac.digest(PSK, server_msg, hashlib.sha256)
+        verified = hmac.compare_digest(hmac_server, hmac_calc)
+        if (verified is False):
+            return 1
+        
+        hkdf_input = PSK + nonce_client + nonce_server + server_session_id
+        # derive session key with HKDF put in enc_key
+        hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'')
+        enc_key = hkdf.derive(hkdf_input)
+        
         self.request_file(filename)
-        self.receive_file(output_filename, enc_key=enc_key, session_id=session_id)
+        self.receive_file(output_filename, enc_key=enc_key, session_id=server_session_id)
+        return 0
 
 
 if __name__ == "__main__":
@@ -170,4 +207,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     filename = sys.argv[1]
-    client.run(filename)
+    result = client.run(filename)
+    if (result == 1) :
+        print("handshake connection not verified")
+        sys.exit(1)

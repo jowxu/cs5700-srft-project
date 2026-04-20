@@ -8,7 +8,6 @@ TYPE_ACK = 1
 TYPE_REQ = 2  # packet type used when the client requests a file
 TYPE_FIN = 3  # packet type used to indicate the end of a file transfer
 
-
 def build_packet(data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_type=0):
     """
     Constructs full packet from scratch
@@ -71,6 +70,35 @@ def parse_packet(raw_bytes):
     payload = raw_bytes[srft_start + 11: udp_start + udp_len]  # udp length includes the header
 
     return src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload
+
+def parse_client_hello(raw_bytes):
+    # 16 bytes - client nonce
+    # UDP as bytes
+    # 32 bytes - because of sha256
+    # 3 bytes for protocol version
+    """
+    Parses client handshake hello
+    """
+    start = (raw_bytes[0] & 0x0F) * 4 # ip header
+    start = start + 8 + 11 # add udp header len and srft protocol header
+    nonce = raw_bytes[start:start+16] 
+    protocol_version = raw_bytes[start+16:start+19]
+    hmac = raw_bytes[start+19: start+51]
+    return nonce, protocol_version, hmac
+
+def parse_server_hello(raw_bytes):
+    # 16 bytes - nonce
+    # 8 byte - session id
+    # 32 bytes - because of sha256
+    """
+    Parses server handshake hello
+    """
+    start = (raw_bytes[0] & 0x0F) * 4
+    start = start + 8 + 11 # add udp header len and srft protocol header
+    nonce = raw_bytes[start:start+16] 
+    session_id = raw_bytes[start+16:start+24]
+    hmac = raw_bytes[start+24: start+56]
+    return nonce, session_id, hmac
 
 def checksum_calc(header_bytes, data): #header_bytes is the header object with 0 in place of checksum
         packet = header_bytes + data
