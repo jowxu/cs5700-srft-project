@@ -76,19 +76,6 @@ class SRFT_UDPClient:
                 raw_bytes, _ = self.recv_sock.recvfrom(65535)
                 src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload = parse_packet(raw_bytes)
 
-                # decrypt package when security is enabled
-                # if enc_key is provided decrypt the payload
-                # if authentication fails → drop the packet and increment counter
-                # if enc_key is None use payload as-is
-                if enc_key is not None and p_type in (TYPE_DATA, TYPE_FIN):
-                    try:
-                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
-                    except InvalidTag:
-                        print(f"AEAD authentication failed — dropping packet seq={seq}")
-                        if p_type == TYPE_DATA:
-                            received_seqs.discard(seq)
-                        continue
-
                 # only process packets addressed to this client port
                 if dst_port != self.client_port:
                     continue
@@ -101,6 +88,19 @@ class SRFT_UDPClient:
                 if not confirm_checksum(p_type, checksum, seq, ack, payload):
                     print(f"corrupted packet discarded: seq={seq}")
                     continue
+
+                # decrypt package when security is enabled
+                # if enc_key is provided decrypt the payload
+                # if authentication fails → drop the packet and increment counter
+                # if enc_key is None use payload as-is
+                if enc_key is not None and p_type in (TYPE_DATA, TYPE_FIN):
+                    try:
+                        payload = decrypt_payload(enc_key, session_id, seq, ack, p_type, payload)
+                    except InvalidTag:
+                        print(f"AEAD authentication failed — dropping packet seq={seq}")
+                        if p_type == TYPE_DATA:
+                            received_seqs.discard(seq)
+                        continue
  
                 # FIN: server is done sending — send final ACK and stop
                 if p_type == TYPE_FIN:
