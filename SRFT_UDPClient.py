@@ -3,17 +3,12 @@ import sys
 import secrets
 import hmac
 import hashlib
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, PSK, build_packet, parse_packet, parse_server_hello, calc_file_digest_path, confirm_checksum
+from SRFT_Config import SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT, PSK
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_server_hello, calc_file_digest_path, confirm_checksum
 from Security import decrypt_payload
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
-# example ips and ports
-SERVER_IP = "172.31.43.77"
-SERVER_PORT = 8080
-CLIENT_IP = "172.31.36.216"
-CLIENT_PORT = 9000
 
 ACK_EVERY = 5
 

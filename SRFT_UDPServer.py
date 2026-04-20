@@ -6,7 +6,8 @@ import time
 import hmac
 import hashlib
 import secrets
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, PSK, build_packet, parse_packet, parse_client_hello, calc_file_digest_bytes, confirm_checksum
+from SRFT_Config import SERVER_IP, SERVER_PORT, PSK
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_client_hello, calc_file_digest_bytes, confirm_checksum
 from Security import encrypt_payload
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -29,8 +30,8 @@ class SRFT_UDPServer:
         }
 
         # config server port and ip
-        self.server_port = 8080
-        self.server_ip = "172.31.43.77"
+        self.server_port = SERVER_PORT
+        self.server_ip = SERVER_IP
 
         try:
             # Using IPPROTO_RAW to manually build IP headers

@@ -1,0 +1,8 @@
+# Config file containing ip, ports and PSK for easy adjustments
+
+SERVER_IP = "172.31.43.77"
+SERVER_PORT = 8080
+CLIENT_IP = "172.31.36.216"
+CLIENT_PORT = 9000
+
+PSK = b"01234567890123456789012345678901"
