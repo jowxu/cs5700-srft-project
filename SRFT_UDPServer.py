@@ -56,26 +56,54 @@ class SRFT_UDPServer:
         handshake_confirmed = False
         while True: 
             # wait for client hello
-            raw_bytes, client_address = self.recv_sock.recvfrom(1024) 
+            raw_bytes, client_address = self.recv_sock.recvfrom(1024)
+            # need to check if the packet is for this server
+            src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload = parse_packet(raw_bytes)
+            if dst_port != self.server_port:
+                continue
+
+            if p_type != TYPE_REQ:
+                continue
+
+            if not confirm_checksum(p_type, checksum, seq, ack, payload):
+                print("[SERVER] Handshake packet checksum mismatch")
+                continue
+
             nonce_client, protocol_version, hmac_client = parse_client_hello(raw_bytes)
-            client_msg = {nonce_client, protocol_version}
+            client_msg = nonce_client + protocol_version
             # verify hmac value matches
             hmac_calc = hmac.digest(PSK, client_msg, hashlib.sha256)
             verified = hmac.compare_digest(hmac_client, hmac_calc)
-            if (verified is True):  
-                handshake_confirmed = True     
+            if (verified is False):  
+                print("[SERVER] Handshake HMAC verification failed")
+                return False, None, None   
+            
+            handshake_confirmed = True
             # send server hello to client 
             nonce_server = secrets.token_bytes(16)
             session_id = secrets.token_bytes(8)
-            server_msg = {nonce_server, session_id}
-            hmac_server = hmac.digest(PSK, server_msg, hashlib.sha256)
-            hello = {nonce_server, session_id, hmac_server}
-            self.send_sock.sendto(hello, (client_address, 0))
-            # derive session key with HKDF use as enc_key
-            hkdf = HKDF(algorithm=hashes.SHA256(), length=32, info=b'')
-            enc_key = hkdf.derive()
 
-            return {handshake_confirmed, enc_key}
+            server_msg = nonce_server + session_id
+            hmac_server = hmac.digest(PSK, server_msg, hashlib.sha256)
+            hello_payload = nonce_server + session_id + hmac_server
+            hello_packet = build_packet(
+                data=hello_payload,
+                seq_num=0,
+                ack_num=0,
+                src_ip=self.server_ip,
+                dst_ip=client_address[0],
+                src_port=self.server_port,
+                dst_port=src_port,
+                p_type=TYPE_ACK
+            )
+
+            self.send_sock.sendto(hello_packet, (client_address[0], 0))
+            # derive session key with HKDF use as enc_key
+            hkdf_input = PSK + nonce_client + nonce_server + session_id
+            hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'')
+            enc_key = hkdf.derive(hkdf_input)
+
+            return handshake_confirmed, enc_key, session_id
 
     def wait_for_request(self):
         """
@@ -99,7 +127,7 @@ class SRFT_UDPServer:
 
             # discard if checksum doesnt match
             if not confirm_checksum(p_type, checksum, seq, ack, payload):
-                print("[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
+                print(f"[SERVER] Checksum mismatch: corrupted REQ packet seq={seq} discarded")
                 continue
             
             # check type, make sure it is a request type packet
@@ -145,7 +173,7 @@ class SRFT_UDPServer:
 
             # checksum confrimation
             if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
-                print("[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
+                print(f"[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
                 continue
  
             print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")
@@ -276,7 +304,7 @@ if __name__ == "__main__":
     print(f"server listening on {server.server_ip}:{server.server_port}")
     print("waiting for file request...")
 
-    handshake_confirmed, enc_key = server.handshake()
+    handshake_confirmed, enc_key, session_id = server.handshake()
 
     if (handshake_confirmed == False) :
         print("handshake connection not verified")
@@ -289,6 +317,6 @@ if __name__ == "__main__":
     print(f"client ip: {client_ip}")
     print(f"client port: {client_port}")
 
-    server.send_file(payload_string, client_ip, client_port) # need to include derived enc_key
+    server.send_file(payload_string, client_ip, client_port, enc_key=enc_key, session_id=session_id) # need to include derived enc_key
 
     server.generate_output_report()

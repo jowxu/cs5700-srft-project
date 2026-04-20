@@ -162,26 +162,36 @@ class SRFT_UDPClient:
 
         # construct client hello
         nonce_client = secrets.token_bytes(16)
-        protocol_version = "placeholder" #REPLACE with actual
-        msg = {nonce_client, protocol_version}
-        hmac_client = hmac.digest(PSK, msg, hashlib.sha256)
-        hello = (nonce_client, protocol_version, hmac_client)
-
+        protocol_version = b"v1 " #REPLACE with actual
+        client_msg = nonce_client + protocol_version
+        hmac_client = hmac.digest(PSK, client_msg, hashlib.sha256)
+        hello_payload = nonce_client + protocol_version + hmac_client
+        hello_packet = build_packet(
+            data=hello_payload,
+            seq_num=0,
+            ack_num=0,
+            src_ip=self.client_ip,
+            dst_ip=self.server_ip,
+            src_port=self.client_port,
+            dst_port=self.server_port,
+            p_type=TYPE_REQ
+        )
         # send client hello
-        self.send_sock.sendto(hello, (self.server_ip, 0))
+        self.send_sock.sendto(hello_packet, (self.server_ip, 0))
         # receive server hello
         raw_bytes, _ = self.recv_sock.recvfrom(1024)
         nonce_server, server_session_id, hmac_server = parse_server_hello(raw_bytes)
         # verify server hello
-        server_msg = {nonce_server, session_id}
+        server_msg = nonce_server + server_session_id
         hmac_calc = hmac.digest(PSK, server_msg, hashlib.sha256)
         verified = hmac.compare_digest(hmac_server, hmac_calc)
         if (verified is False):
             return 1
         
+        hkdf_input = PSK + nonce_client + nonce_server + server_session_id
         # derive session key with HKDF put in enc_key
-        hkdf = HKDF(algorithm=hashes.SHA256(), length=32, info=b'')
-        enc_key = hkdf.derive()
+        hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'')
+        enc_key = hkdf.derive(hkdf_input)
         
         self.request_file(filename)
         self.receive_file(output_filename, enc_key=enc_key, session_id=server_session_id)

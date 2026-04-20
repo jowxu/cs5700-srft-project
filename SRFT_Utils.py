@@ -72,16 +72,18 @@ def parse_packet(raw_bytes):
     return src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload
 
 def parse_client_hello(raw_bytes):
-    # 16 bytes - nonce
+    # 16 bytes - client nonce
     # UDP as bytes
     # 32 bytes - because of sha256
+    # 3 bytes for protocol version
     """
     Parses client handshake hello
     """
-    start = (raw_bytes[0] & 0x0F) * 4
-    nonce = raw_bytes[start:start+15] 
-    protocol_version = raw_bytes[start+15:start+18]
-    hmac = raw_bytes[start+18: start+50]
+    start = (raw_bytes[0] & 0x0F) * 4 # ip header
+    start = start + 8 + 11 # add udp header len and srft protocol header
+    nonce = raw_bytes[start:start+16] 
+    protocol_version = raw_bytes[start+16:start+19]
+    hmac = raw_bytes[start+19: start+51]
     return nonce, protocol_version, hmac
 
 def parse_server_hello(raw_bytes):
@@ -92,9 +94,10 @@ def parse_server_hello(raw_bytes):
     Parses server handshake hello
     """
     start = (raw_bytes[0] & 0x0F) * 4
-    nonce = raw_bytes[start:start+15] 
-    session_id = raw_bytes[start+15:start+23]
-    hmac = raw_bytes[start+23: start+55]
+    start = start + 8 + 11 # add udp header len and srft protocol header
+    nonce = raw_bytes[start:start+16] 
+    session_id = raw_bytes[start+16:start+24]
+    hmac = raw_bytes[start+24: start+56]
     return nonce, session_id, hmac
 
 def checksum_calc(header_bytes, data): #header_bytes is the header object with 0 in place of checksum
