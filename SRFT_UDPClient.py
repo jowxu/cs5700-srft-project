@@ -73,8 +73,8 @@ class SRFT_UDPClient:
         """
         payload = b''
         if enc_key is not None:
-            payload = encrypt_payload(enc_key, session_id, 0, ack_num, TYPE_ACK, b'')
-        ack_packet = build_packet(data=payload, seq_num=0, ack_num=ack_num, src_ip=self.client_ip, dst_ip=self.server_ip, 
+            payload = encrypt_payload(enc_key, session_id, ack_num, ack_num, TYPE_ACK, b'')
+        ack_packet = build_packet(data=payload, seq_num=ack_num, ack_num=ack_num, src_ip=self.client_ip, dst_ip=self.server_ip, 
                                   src_port=self.client_port, dst_port=self.server_port, p_type=TYPE_ACK)
         
         self.send_sock.sendto(ack_packet, (self.server_ip, 0))

@@ -179,7 +179,7 @@ class SRFT_UDPServer:
 
             if self.enc_key is not None:
                 try:
-                    decrypt_payload(self.enc_key, self.session_id, 0, ack_num, TYPE_ACK, payload)
+                    decrypt_payload(self.enc_key, self.session_id, seq, ack_num, TYPE_ACK, payload)
                 except InvalidTag:
                     print(f"[SERVER] AEAD authentication failed on ACK — dropping")
                     continue
