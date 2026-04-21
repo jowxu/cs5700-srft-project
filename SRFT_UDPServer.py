@@ -52,6 +52,18 @@ class SRFT_UDPServer:
         self.total_packets = 0      # total number of file chunks 
         self.ack_thread = None
 
+        # attack mode fields
+        self.attack_mode = None
+        # tamper fields
+        self.has_tampered = False
+        # replay fields
+        self.replay_packet = None
+        self.replay_seq = None
+        self.replay_sent = False
+        # inject fields
+        self.inject_sent = False
+        self.inject_seq = None
+
     def handshake(self):
         # return boolean and enc_key
         handshake_confirmed = False
@@ -172,16 +184,16 @@ class SRFT_UDPServer:
             if dst_port != self.server_port or p_type != TYPE_ACK:
                 continue
 
-            # checksum confrimation
-            if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
-                print(f"[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
-                continue
-
             if self.enc_key is not None:
                 try:
                     decrypt_payload(self.enc_key, self.session_id, seq, ack_num, TYPE_ACK, payload)
                 except InvalidTag:
                     print(f"[SERVER] AEAD authentication failed on ACK — dropping")
+                    continue
+            else:
+                # checksum confrimation if there is no security
+                if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
+                    print(f"[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
                     continue
  
             print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")
@@ -232,6 +244,14 @@ class SRFT_UDPServer:
         # Reset sliding window state
         self.base            = 1
         self.unacked         = {}
+
+        # reset attack mode variables
+        self.has_tampered = False
+        self.replay_packet = None
+        self.replay_seq = None
+        self.replay_sent = False
+        self.inject_sent = False
+        self.inject_seq = None
  
         # Start ACK listener thread
         self.start_ack_thread()
@@ -248,19 +268,45 @@ class SRFT_UDPServer:
                     # if enc_key is None (Phase 1) send plaintext as before
                     if enc_key is not None:
                         chunk = encrypt_payload(enc_key, session_id, next_seq, 0, TYPE_DATA, chunk)
-                    packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
-                                           dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA) 
+                    clean_packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
+                                           dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA)
+                    
+                    packet = clean_packet
+                    
+                    # tamper packet if tamper mode
+                    if self.attack_mode == "tamper" and not self.has_tampered:
+                        packet = self.tamper_packet(clean_packet, next_seq)
+
+                    # store packet if replay mode
+                    if self.attack_mode == "replay" and self.replay_packet is None:
+                        self.store_replay_packet(clean_packet, next_seq)
+
                     self.send_sock.sendto(packet, (dest_ip, 0))
  
                     # Record packet in unacked dict so we can retransmit if needed
                     self.unacked[next_seq] = {
-                        "packet"    : packet,
+                        "packet"    : clean_packet,
                         "sent_time" : time.time()
                     }
  
                     self.stats["packets_sent"] += 1
                     print(f"[SERVER] Sent packet seq={next_seq}")
                     next_seq += 1
+
+            # send stored replay packet if replay mode is on, packet is stored, no previoud replay packet was sent
+            # send after the base seq has passed the replay seq
+            if (self.attack_mode == "replay"
+                and self.replay_packet is not None
+                and not self.replay_sent
+                and self.base > self.replay_seq):
+                self.send_sock.sendto(self.replay_packet, (dest_ip, 0))
+                self.replay_sent = True
+                self.stats["packets_sent"] += 1
+                print(f"[SERVER ATTACK] Replayed old data packet seq={self.replay_seq}")
+
+            # inject forged packet if inject mode is on and no previous injection happened.
+            if self.attack_mode == "inject" and not self.inject_sent:
+                self.inject_forged_packet(dest_ip, dest_port)
  
             # Check every unacknowledged packet — if its timer has expired, resend it
             now = time.time()
@@ -314,8 +360,105 @@ class SRFT_UDPServer:
 
         print(f"Server summary report generated: {report_name}")
 
+    def tamper_packet(self, packet, seq_num):
+        """
+        If attack mode set to tamper, flip 2 bits for 1 outbound data packet
+        returns packet normally otherwise.
+        """
+        # return packet normally if tamper is not on or a packet is already attacked
+        if self.attack_mode != "tamper" or self.has_tampered:
+            return packet
+        
+        # target only middle packets
+        if seq_num < 7:
+            return packet
+        
+        tampered_packet = bytearray(packet)
+
+        payload_start = 20 + 8 + 11 # ip header, udp header, srft header
+
+        # ignore if packet is empty or irregular packet size
+        if len(tampered_packet) <= payload_start:
+            return packet
+        
+        # flip 2 bits in udp payload
+        tampered_packet[payload_start] ^= 0b00000011
+
+        self.has_tampered = True
+        print(f"[SERVER ATTACK] Tampered outbound DATA packet seq={seq_num}")
+
+        return bytes(tampered_packet)
+    
+    def store_replay_packet(self, packet, seq_num):
+        """
+        while in replay attack mode this will store 1 packet to be resent later.
+        """
+        if self.attack_mode != "replay":
+            return
+        if self.replay_packet is not None:
+            return
+        if seq_num < 7:
+            return
+        
+        self.replay_packet = packet
+        self.replay_seq = seq_num
+        print(f"[SERVER ATTACK] Stored DATA packet seq={seq_num} for replay")
+
+    def inject_forged_packet(self, dest_ip, dest_port):
+        """
+        inject mode function that sends 1 forged data packet.
+        """
+        if self.attack_mode != "inject" or self.inject_sent:
+            return
+        # wait for first batch of acked packets
+        if self.base < 7:
+            return
+        
+        forged_seq = self.base + 100
+        forged_payload = os.urandom(32) # random payload
+
+        forged_packet = build_packet(
+            data=forged_payload,
+            seq_num=forged_seq,
+            ack_num=0,
+            src_ip=self.server_ip,
+            dst_ip=dest_ip,
+            src_port=self.server_port,
+            dst_port=dest_port,
+            p_type=TYPE_DATA
+        )
+
+        self.send_sock.sendto(forged_packet, (dest_ip, 0))
+        self.inject_sent = True
+        self.inject_seq = forged_seq
+        self.stats["packets_sent"] += 1
+        print(f"[SERVER ATTACK] Injected forged DATA packet seq={forged_seq}")
+
 if __name__ == "__main__":
+    attack_mode = None
+    # attack mode input logic, needs to have command of: sudo python3 SRFT_UDPServer.py --attack <tamper, replay, or inject>
+    # otherwise if no attack mode just use: sudo python3 SRFT_UDPServer.py
+    if len(sys.argv) == 3 and sys.argv[1] == "--attack":
+        if sys.argv[2] == "tamper" or sys.argv[2] == "replay" or sys.argv[2] == "inject":
+            attack_mode = sys.argv[2]
+        else:
+            print("Usage:")
+            print("python3 SRFT_UDPServer.py")
+            print("python3 SRFT_UDPServer.py --attack tamper")
+            print("python3 SRFT_UDPServer.py --attack replay")
+            print("python3 SRFT_UDPServer.py --attack inject")
+            sys.exit(1)
+    elif len(sys.argv) != 1:
+        print("Usage:")
+        print("python3 SRFT_UDPServer.py")
+        print("python3 SRFT_UDPServer.py --attack tamper")
+        print("python3 SRFT_UDPServer.py --attack replay")
+        print("python3 SRFT_UDPServer.py --attack inject")
+        sys.exit(1)
+
     server = SRFT_UDPServer()
+    # set attack mode if there is one
+    server.attack_mode = attack_mode
 
     print(f"server listening on {server.server_ip}:{server.server_port}")
     print("waiting for file request...")

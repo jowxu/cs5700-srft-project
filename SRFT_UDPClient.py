@@ -105,12 +105,6 @@ class SRFT_UDPClient:
                 if p_type not in (TYPE_DATA, TYPE_FIN):
                     continue
 
-                # confirm checksum for corruption
-                if not confirm_checksum(p_type, checksum, seq, ack, payload):
-                    self.stats["checksum_errors"] += 1
-                    print(f"corrupted packet discarded: seq={seq}")
-                    continue
-
                 # decrypt package when security is enabled
                 # if enc_key is provided decrypt the payload
                 # if authentication fails → drop the packet and increment counter
@@ -123,6 +117,12 @@ class SRFT_UDPClient:
                         print(f"AEAD authentication failed — dropping packet seq={seq}")
                         if p_type == TYPE_DATA:
                             received_seqs.discard(seq)
+                        continue
+                else:
+                    # confirm checksum for corruption if no security
+                    if not confirm_checksum(p_type, checksum, seq, ack, payload):
+                        self.stats["checksum_errors"] += 1
+                        print(f"corrupted packet discarded: seq={seq}")
                         continue
  
                 # FIN: server is done sending — send final ACK and stop
