@@ -7,7 +7,7 @@ import time
 import os
 from SRFT_Config import SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT, PSK
 from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_server_hello, calc_file_digest_path, confirm_checksum
-from Security import decrypt_payload
+from Security import decrypt_payload, encrypt_payload
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -67,11 +67,14 @@ class SRFT_UDPClient:
 
         print("packet sent")
 
-    def send_cumulative_ack(self, ack_num):
+    def send_cumulative_ack(self, ack_num, enc_key=None, session_id=None):
         """
         Sends a TYPE_ACK packet back to the server.
         """
-        ack_packet = build_packet(data=b'', seq_num=0, ack_num=ack_num, src_ip=self.client_ip, dst_ip=self.server_ip, 
+        payload = b''
+        if enc_key is not None:
+            payload = encrypt_payload(enc_key, session_id, 0, ack_num, TYPE_ACK, b'')
+        ack_packet = build_packet(data=payload, seq_num=0, ack_num=ack_num, src_ip=self.client_ip, dst_ip=self.server_ip, 
                                   src_port=self.client_port, dst_port=self.server_port, p_type=TYPE_ACK)
         
         self.send_sock.sendto(ack_packet, (self.server_ip, 0))
@@ -126,7 +129,7 @@ class SRFT_UDPClient:
                 if p_type == TYPE_FIN:
                     print("FIN received — transfer complete")
                     received_digest = payload.decode(errors="ignore").strip()
-                    self.send_cumulative_ack(expected_seq - 1)
+                    self.send_cumulative_ack(expected_seq - 1, enc_key=enc_key, session_id=session_id)
                     break
  
                 # only process DATA packets beyond this point
@@ -137,7 +140,7 @@ class SRFT_UDPClient:
                 if seq in received_seqs:
                     self.stats["duplicate_packets"] += 1
                     print(f"duplicate packet discarded: seq={seq}")
-                    self.send_cumulative_ack(expected_seq - 1) 
+                    self.send_cumulative_ack(expected_seq - 1, enc_key=enc_key, session_id=session_id)
                     continue
  
                 # mark this sequence number as seen
@@ -161,7 +164,7 @@ class SRFT_UDPClient:
                 # send cumulative ACK (batched)
                 ack_counter += 1
                 if ack_counter >= ACK_EVERY:
-                    self.send_cumulative_ack(expected_seq - 1)
+                    self.send_cumulative_ack(expected_seq - 1, enc_key=enc_key, session_id=session_id)
                     ack_counter = 0
                 
         # record file size and md5sum
