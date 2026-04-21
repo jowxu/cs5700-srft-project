@@ -25,8 +25,9 @@ class SRFT_UDPServer:
             "filesize": 0,
             "packets_sent": 0,
             "retransmitted": 0,
-            "acks_received": 0,
-            "start_time": 0
+            "received_from_client": 0,
+            "start_time": 0,
+            "original_file_md5": "",
         }
 
         # config server port and ip
@@ -178,7 +179,7 @@ class SRFT_UDPServer:
 
             if self.enc_key is not None:
                 try:
-                    decrypt_payload(self.enc_key, self.session_id, 0, ack_num, TYPE_ACK, payload)
+                    decrypt_payload(self.enc_key, self.session_id, seq, ack_num, TYPE_ACK, payload)
                 except InvalidTag:
                     print(f"[SERVER] AEAD authentication failed on ACK — dropping")
                     continue
@@ -196,7 +197,7 @@ class SRFT_UDPServer:
                 if ack_num >= self.base:
                     self.base = ack_num + 1
  
-                self.stats["acks_received"] += 1
+                self.stats["received_from_client"] += 1
  
             # If the base has moved past all packets, the entire file is acknowledged
             if self.base > self.total_packets:
@@ -212,6 +213,7 @@ class SRFT_UDPServer:
 
         # calculate the digest of the file data
         file_digest = calc_file_digest_bytes(file_data)
+        self.stats["original_file_md5"] = hashlib.md5(file_data).hexdigest()
  
         chunks        = [file_data[i: i + CHUNK_SIZE] for i in range(0, len(file_data), CHUNK_SIZE)]
         total_packets = len(chunks)
@@ -295,17 +297,22 @@ class SRFT_UDPServer:
 
         # Define the output filename
         base_name = self.stats['filename'].rsplit('.', 1)[0]
-        report_name = f"transfer_report_{base_name}.txt"
+        report_name = f"server_report_{base_name}.txt"
 
         with open(report_name, 'w') as f:
+            f.write("====================================================\n")
+            f.write("SERVER REPORT\n")
+            f.write("====================================================\n")
             f.write(f"Name of the transferred file: {self.stats['filename']}\n")
-            f.write(f"Size of the transferred file: {self.stats['filesize']}\n")
+            f.write(f"Size of the transferred file: {self.stats['filesize']} bytes\n")
             f.write(f"The number of packets sent from the server: {self.stats['packets_sent']}\n")
             f.write(f"The number of retransmitted packets from the server: {self.stats['retransmitted']}\n")
-            f.write(f"The number of packets received from the client: {self.stats['acks_received']}\n")
+            f.write(f"The number of packets received from the client: {self.stats['received_from_client']}\n")
             f.write(f"The time duration of the file transfer (hh:min:ss): {duration_formatted}\n")
+            f.write(f"Original file MD5: {self.stats['original_file_md5']}\n")
+            f.write("====================================================\n")
 
-        print(f"Summary report generated: {report_name}")
+        print(f"Server summary report generated: {report_name}")
 
 if __name__ == "__main__":
     server = SRFT_UDPServer()
