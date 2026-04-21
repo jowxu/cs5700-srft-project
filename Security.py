@@ -7,12 +7,12 @@ NonceSize = 12
 def build_aad(session_id, seq_num, ack_num, p_type):
     return struct.pack('!8sIIB', session_id, seq_num, ack_num, p_type)
 
-def build_nonce(seq_num):
-    return seq_num.to_bytes(NonceSize, byteorder='big')
+def build_nonce(seq_num, p_type):
+    return p_type.to_bytes(1, byteorder='big') + seq_num.to_bytes(11, byteorder='big')
 
 def encrypt_payload(enc_key, session_id, seq_num, ack_num, p_type, plaintext):
     aad   = build_aad(session_id, seq_num, ack_num, p_type)
-    nonce = build_nonce(seq_num)
+    nonce = build_nonce(seq_num, p_type)
  
     # AESGCM takes the key and handles encrypt/decrypt
     # encrypt() returns ciphertext with the 16-byte tag already appended
