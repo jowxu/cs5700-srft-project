@@ -436,24 +436,16 @@ class SRFT_UDPServer:
 
 if __name__ == "__main__":
     attack_mode = None
-    # attack mode input logic, needs to have command of: sudo python3 SRFT_UDPServer.py attack <tamper, replay, or inject>
+    # attack mode input logic, needs to have command of: sudo python3 SRFT_UDPServer.py <tamper, replay, or inject>
     # otherwise if no attack mode just use: sudo python3 SRFT_UDPServer.py
-    if len(sys.argv) == 3 and sys.argv[1] == "attack":
-        if sys.argv[2] == "tamper" or sys.argv[2] == "replay" or sys.argv[2] == "inject":
-            attack_mode = sys.argv[2]
-        else:
-            print("Usage:")
-            print("python3 SRFT_UDPServer.py")
-            print("python3 SRFT_UDPServer.py attack tamper")
-            print("python3 SRFT_UDPServer.py attack replay")
-            print("python3 SRFT_UDPServer.py attack inject")
-            sys.exit(1)
-    elif len(sys.argv) != 1:
-        print("Usage:")
+    if len(sys.argv) == 2 and (sys.argv[1] in ("tamper", "replay", "inject")):
+        attack_mode = sys.argv[1]
+    elif len(sys.argv) > 1:
+        print("usage:")
         print("python3 SRFT_UDPServer.py")
-        print("python3 SRFT_UDPServer.py attack tamper")
-        print("python3 SRFT_UDPServer.py attack replay")
-        print("python3 SRFT_UDPServer.py attack inject")
+        print("python3 SRFT_UDPServer.py tamper")
+        print("python3 SRFT_UDPServer.py replay")
+        print("python3 SRFT_UDPServer.py inject")
         sys.exit(1)
 
     server = SRFT_UDPServer()
