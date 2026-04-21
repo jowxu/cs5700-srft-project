@@ -8,7 +8,7 @@ import hashlib
 import secrets
 from SRFT_Config import SERVER_IP, SERVER_PORT, PSK
 from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_client_hello, calc_file_digest_bytes, confirm_checksum
-from Security import encrypt_payload
+from Security import encrypt_payload, decrypt_payload
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -175,6 +175,13 @@ class SRFT_UDPServer:
             if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
                 print(f"[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
                 continue
+
+            if self.enc_key is not None:
+                try:
+                    decrypt_payload(self.enc_key, self.session_id, 0, ack_num, TYPE_ACK, payload)
+                except InvalidTag:
+                    print(f"[SERVER] AEAD authentication failed on ACK — dropping")
+                    continue
  
             print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")
  
@@ -215,6 +222,8 @@ class SRFT_UDPServer:
 
         self.dest_port = dest_port
         self.total_packets = total_packets
+        self.enc_key    = enc_key
+        self.session_id = session_id
  
         print(f"[SERVER] Sending '{filename}' | {len(file_data)} bytes | {total_packets} packets")
  
