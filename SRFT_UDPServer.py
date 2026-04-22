@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 # Sliding window specifications
-WINDOW_SIZE  = 32
+WINDOW_SIZE  = 64
 TIMEOUT = 2.0
 CHUNK_SIZE = 1024  # size of each file chunk to send (in bytes)
 
@@ -289,18 +289,37 @@ class SRFT_UDPServer:
                     while next_seq <= total_packets and next_seq < self.base + WINDOW_SIZE:
                         send_file_obj.seek((next_seq - 1) * CHUNK_SIZE)
                         chunk = send_file_obj.read(CHUNK_SIZE)   # seq numbers start at 1, list index at 0
-                        # if enc_key is provided encrypt the chunk before sending
-                        # if enc_key is None (Phase 1) send plaintext as before
+                        # if enc_key is None send plaintext as before
                         if enc_key is not None:
                             chunk = encrypt_payload(enc_key, session_id, next_seq, 0, TYPE_DATA, chunk)
-                        clean_packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
-                                            dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA)
-                        
+
+                        clean_packet = build_packet(
+                            data=chunk,
+                            seq_num=next_seq,
+                            ack_num=0,
+                            src_ip=self.server_ip,
+                            dst_ip=dest_ip,
+                            src_port=self.server_port,
+                            dst_port=dest_port,
+                            p_type=TYPE_DATA
+                        )
+
                         packet = clean_packet
-                        
-                        # tamper packet if tamper mode
+
+                        # tamper encrypted payload
                         if self.attack_mode == "tamper" and not self.has_tampered:
-                            packet = self.tamper_packet(clean_packet, next_seq)
+                            tampered_chunk = self.tamper_packet(chunk, next_seq)
+
+                            packet = build_packet(
+                                data=tampered_chunk,
+                                seq_num=next_seq,
+                                ack_num=0,
+                                src_ip=self.server_ip,
+                                dst_ip=dest_ip,
+                                src_port=self.server_port,
+                                dst_port=dest_port,
+                                p_type=TYPE_DATA
+                            )
 
                         # store packet if replay mode
                         if self.attack_mode == "replay" and self.replay_packet is None:
@@ -390,34 +409,30 @@ class SRFT_UDPServer:
 
         print(f"Server summary report generated: {report_name}")
 
-    def tamper_packet(self, packet, seq_num):
+    def tamper_packet(self, payload_bytes, seq_num):
         """
         If attack mode set to tamper, flip 2 bits for 1 outbound data packet
         returns packet normally otherwise.
         """
-        # return packet normally if tamper is not on or a packet is already attacked
         if self.attack_mode != "tamper" or self.has_tampered:
-            return packet
-        
-        # target only middle packets
+            return payload_bytes
+
+        # avoid tampering the first packets
         if seq_num < 7:
-            return packet
-        
-        tampered_packet = bytearray(packet)
+            return payload_bytes
 
-        payload_start = 20 + 8 + 11 # ip header, udp header, srft header
+        tampered = bytearray(payload_bytes)
 
-        # ignore if packet is empty or irregular packet size
-        if len(tampered_packet) <= payload_start:
-            return packet
-        
-        # flip 2 bits in udp payload
-        tampered_packet[payload_start] ^= 0b00000011
+        if len(tampered) == 0:
+            return payload_bytes
+
+        # flip a bit in the encrypted payload
+        tampered[0] ^= 0b00000001
 
         self.has_tampered = True
         print(f"[SERVER ATTACK] Tampered outbound DATA packet seq={seq_num}")
 
-        return bytes(tampered_packet)
+        return bytes(tampered)
     
     def store_replay_packet(self, packet, seq_num):
         """
