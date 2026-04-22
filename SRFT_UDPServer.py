@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 # Sliding window specifications
-WINDOW_SIZE  = 32
+WINDOW_SIZE  = 64
 TIMEOUT = 2.0
 CHUNK_SIZE = 1024  # size of each file chunk to send (in bytes)
 
