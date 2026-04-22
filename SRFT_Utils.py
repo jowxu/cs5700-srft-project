@@ -8,7 +8,6 @@ TYPE_ACK = 1
 TYPE_REQ = 2  # packet type used when the client requests a file
 TYPE_FIN = 3  # packet type used to indicate the end of a file transfer
 
-
 def build_packet(data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_type=0):
     """
     Constructs full packet from scratch
@@ -25,15 +24,15 @@ def build_packet(data, seq_num, ack_num, src_ip, dst_ip, src_port, dst_port, p_t
 
     # NOTE FOR TEAM: Replace the '0' with the actual checksum function
 
-    srft_header = struct.pack('!B H I I', p_type, 0, seq_num, ack_num)
+    temp_srft_header = struct.pack('!B H I I', p_type, 0, seq_num, ack_num)
+    checksum = checksum_calc(temp_srft_header, data)
+    srft_header = struct.pack("!B H I I", p_type, checksum, seq_num, ack_num)
 
     # 2: UDP HEADER
     # Fields: Source Port, Dest Port, Total Length (Header + Data), Checksum
     # Total length = 8 bytes (UDP) + 11 bytes (SRFT) + actual data length
     udp_len = 8 + len(srft_header) + len(data)
-    temp_udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, 0)
-    checksum = udp_checksum_calc(temp_udp_header, data)
-    udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, checksum)
+    udp_header = struct.pack('!HHHH', src_port, dst_port, udp_len, 0)
 
     # 3: IP HEADER
     # Standard IPv4 header construction
@@ -72,8 +71,37 @@ def parse_packet(raw_bytes):
 
     return src_ip, dst_ip, src_port, dst_port, p_type, checksum, seq, ack, payload
 
-def udp_checksum_calc(udp_header, data): #udp_header is the header object with 0 in place of checksum
-        packet = udp_header + data
+def parse_client_hello(raw_bytes):
+    # 16 bytes - client nonce
+    # UDP as bytes
+    # 32 bytes - because of sha256
+    # 3 bytes for protocol version
+    """
+    Parses client handshake hello
+    """
+    start = (raw_bytes[0] & 0x0F) * 4 # ip header
+    start = start + 8 + 11 # add udp header len and srft protocol header
+    nonce = raw_bytes[start:start+16] 
+    protocol_version = raw_bytes[start+16:start+19]
+    hmac = raw_bytes[start+19: start+51]
+    return nonce, protocol_version, hmac
+
+def parse_server_hello(raw_bytes):
+    # 16 bytes - nonce
+    # 8 byte - session id
+    # 32 bytes - because of sha256
+    """
+    Parses server handshake hello
+    """
+    start = (raw_bytes[0] & 0x0F) * 4
+    start = start + 8 + 11 # add udp header len and srft protocol header
+    nonce = raw_bytes[start:start+16] 
+    session_id = raw_bytes[start+16:start+24]
+    hmac = raw_bytes[start+24: start+56]
+    return nonce, session_id, hmac
+
+def checksum_calc(header_bytes, data): #header_bytes is the header object with 0 in place of checksum
+        packet = header_bytes + data
 
         # if len is odd
         if len(packet) % 2 != 0:
@@ -88,13 +116,25 @@ def udp_checksum_calc(udp_header, data): #udp_header is the header object with 0
         checksum_val = ~sum & 0xffff
         return checksum_val
 
-def calc_file_digest_bytes(file_bytes):
-    return hashlib.sha256(file_bytes).hexdigest()
+def confirm_checksum(p_type, checksum, seq, ack, payload):
+    temp_srft_header = struct.pack("!B H I I", p_type, 0, seq, ack)
+    comparison_checksum = checksum_calc(temp_srft_header, payload)
+    return comparison_checksum == checksum
 
-def calc_file_digest_path(file_path):
-    file_bytes = open(file_bytes, "rb").read()
-    return calc_file_digest_bytes(file_bytes)
+def calc_file_hashes(file_path):
+    """
+    Calculates both md5 and sha-256 by streaming instead of full file load
+    returns: tuple (md5_hex, sha256_hex)
+    """
+    md5 = hashlib.md5()
+    sha256 = hashlib.sha256()
 
-def verify_file_digest(file_path, expected_digest):
-    actual_digest = calc_file_digest_path(file_path)
-    return actual_digest == expected_digest
+    with open(file_path, "rb") as f:
+        while True:
+            block = f.read(1024 * 1024)  # 1 mb chunks to not overload memory
+            if not block:
+                break
+            md5.update(block)
+            sha256.update(block)
+
+    return md5.hexdigest(), sha256.hexdigest()
