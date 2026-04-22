@@ -113,6 +113,8 @@ Before sending, the server computes `SHA-256(file_bytes)` and sends the hex dige
 
 - Add certificate-based authentication as an alternative to PSK for stronger identity guarantees.
 
+- Add congestion control and selective ACK algorithms to create a more robust retransmission system.
+
 - To implement Replay Protection, we will implement a sliding-window replay protection on the client side, replacing the simple duplicate-detection set and independent expected sequence number. It will distinguish duplicates, out-of-window attack packets, and legitimate new packets by rejecting sequence numbers beyond max_delivered + window_size (128), preventing sequence number jump attacks and unbounded memory usage. The core logic will encapsulate duplicate detection, window boundary, max_delivered, and buffered set into a single object: check() will determine packet status, mark_received() will buffer valid packets, and advance() will automatically move the window forward when contiguous sequence numbers are received. Cumulative ACKs will always be sent as expected_seq() - 1, ensuring they reflect true in-order delivery progress. The design will strictly follow the authenticate‑then‑replay order: AEAD decryption will happen before replay checking, so forged packets cannot pollute the window state.
 
 ## References
