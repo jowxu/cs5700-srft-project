@@ -121,14 +121,20 @@ def confirm_checksum(p_type, checksum, seq, ack, payload):
     comparison_checksum = checksum_calc(temp_srft_header, payload)
     return comparison_checksum == checksum
 
-def calc_file_digest_bytes(file_bytes):
-    return hashlib.sha256(file_bytes).hexdigest()
+def calc_file_hashes(file_path):
+    """
+    Calculates both md5 and sha-256 by streaming instead of full file load
+    returns: tuple (md5_hex, sha256_hex)
+    """
+    md5 = hashlib.md5()
+    sha256 = hashlib.sha256()
 
-def calc_file_digest_path(file_path):
     with open(file_path, "rb") as f:
-        file_bytes = f.read()
-    return calc_file_digest_bytes(file_bytes)
+        while True:
+            block = f.read(1024 * 1024)  # 1 mb chunks to not overload memory
+            if not block:
+                break
+            md5.update(block)
+            sha256.update(block)
 
-def verify_file_digest(file_path, expected_digest):
-    actual_digest = calc_file_digest_path(file_path)
-    return actual_digest == expected_digest
+    return md5.hexdigest(), sha256.hexdigest()

@@ -6,13 +6,15 @@ import hashlib
 import time
 import os
 from SRFT_Config import SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT, PSK
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_server_hello, calc_file_digest_path, confirm_checksum
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_server_hello, calc_file_hashes, confirm_checksum
 from Security import decrypt_payload, encrypt_payload
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 ACK_EVERY = 5
+HANDSHAKE_TIMEOUT = 2.0
+HANDSHAKE_REATTEMPTS = 5
 
 class SRFT_UDPClient:
     def __init__(self):
@@ -59,7 +61,6 @@ class SRFT_UDPClient:
         packet = build_packet(data=payload, seq_num=0, ack_num=0, src_ip=self.client_ip, dst_ip=self.server_ip, 
                                    src_port=self.client_port, dst_port=self.server_port, p_type=TYPE_REQ)
         
-        #print line for testing
         print(f"sending packet requesting {filename} to {self.server_ip}:{self.server_port}")
 
         # send packet
@@ -78,7 +79,8 @@ class SRFT_UDPClient:
                                   src_port=self.client_port, dst_port=self.server_port, p_type=TYPE_ACK)
         
         self.send_sock.sendto(ack_packet, (self.server_ip, 0))
-        print(f"cumulative ACK sent: ack_num = {ack_num}")
+        # print line for debugging
+        # print(f"cumulative ACK sent: ack_num = {ack_num}")
  
     def receive_file(self, output_filename, enc_key=None, session_id=None):
         """
@@ -139,7 +141,8 @@ class SRFT_UDPClient:
                 # Duplicate detection 
                 if seq in received_seqs:
                     self.stats["duplicate_packets"] += 1
-                    print(f"duplicate packet discarded: seq={seq}")
+                    # print line for debugging
+                    # print(f"duplicate packet discarded: seq={seq}")
                     self.send_cumulative_ack(expected_seq - 1, enc_key=enc_key, session_id=session_id)
                     continue
  
@@ -153,12 +156,19 @@ class SRFT_UDPClient:
                 # store in buffer keyed by sequence number
                 recv_buffer[seq] = payload
                 self.stats["packets_received"] += 1
-                print(f"received packet seq={seq}")
+
+                # immediately send duplicate cumulative ACK for out of order packet
+                if seq != expected_seq:
+                    self.send_cumulative_ack(expected_seq - 1, enc_key=enc_key, session_id=session_id)
+                    continue
+                # print line for debugging
+                # print(f"received packet seq={seq}")
  
                 # write any contiguous sequence of packets starting from expected_seq
                 while expected_seq in recv_buffer:
                     out_file.write(recv_buffer.pop(expected_seq))
-                    print(f"written to file: seq={expected_seq}")
+                    # print line for debugging
+                    # print(f"written to file: seq={expected_seq}")
                     expected_seq += 1
  
                 # send cumulative ACK (batched)
@@ -169,11 +179,8 @@ class SRFT_UDPClient:
                 
         # record file size and md5sum
         self.stats["filesize"] = os.path.getsize(output_filename)
-        with open(output_filename, "rb") as f:
-            self.stats["received_file_md5"] = hashlib.md5(f.read()).hexdigest()
-
-        # calculate local file digest
-        local_digest = calc_file_digest_path(output_filename)
+        received_md5, local_digest = calc_file_hashes(output_filename)
+        self.stats["received_file_md5"] = received_md5
 
         # compare digests
         print(f"received digest: {received_digest}")
@@ -215,19 +222,44 @@ class SRFT_UDPClient:
             dst_port=self.server_port,
             p_type=TYPE_REQ
         )
-        # send client hello
-        self.send_sock.sendto(hello_packet, (self.server_ip, 0))
-        # receive server hello
-        raw_bytes, _ = self.recv_sock.recvfrom(1024)
-        nonce_server, server_session_id, hmac_server = parse_server_hello(raw_bytes)
-        # verify server hello
-        server_msg = nonce_server + server_session_id
-        hmac_calc = hmac.digest(PSK, server_msg, hashlib.sha256)
-        verified = hmac.compare_digest(hmac_server, hmac_calc)
-        if (verified is False):
+        # send client hello and retry if server hello is lost
+        server_session_id = None
+
+        for attempt in range(HANDSHAKE_REATTEMPTS):
+            self.send_sock.sendto(hello_packet, (self.server_ip, 0))
+
+            try:
+                self.recv_sock.settimeout(HANDSHAKE_TIMEOUT)
+                raw_bytes, _ = self.recv_sock.recvfrom(1024)
+            except socket.timeout:
+                print(f"handshake timeout, retrying ({attempt + 1}/{HANDSHAKE_REATTEMPTS})")
+                continue
+            finally:
+                self.recv_sock.settimeout(None)
+
+            # parse and verify server hello
+            try:
+                nonce_server, server_session_id, hmac_server = parse_server_hello(raw_bytes)
+            except Exception:
+                print(f"invalid server hello, retrying ({attempt + 1}/{HANDSHAKE_REATTEMPTS})")
+                server_session_id = None
+                continue
+
+            server_msg = nonce_server + server_session_id
+            hmac_calc = hmac.digest(PSK, server_msg, hashlib.sha256)
+            verified = hmac.compare_digest(hmac_server, hmac_calc)
+
+            if not verified:
+                print(f"server hello authentication failed, retrying ({attempt + 1}/{HANDSHAKE_REATTEMPTS})")
+                server_session_id = None
+                continue
+
+            self.stats["handshake_status"] = "Success"
+            break
+
+        if server_session_id is None:
             self.generate_output_report()
             return 1
-        self.stats["handshake_status"] = "Success"
         
         hkdf_input = PSK + nonce_client + nonce_server + server_session_id
         # derive session key with HKDF put in enc_key

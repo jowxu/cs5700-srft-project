@@ -7,14 +7,14 @@ import hmac
 import hashlib
 import secrets
 from SRFT_Config import SERVER_IP, SERVER_PORT, PSK
-from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_client_hello, calc_file_digest_bytes, confirm_checksum
+from SRFT_Utils import TYPE_DATA, TYPE_ACK, TYPE_REQ, TYPE_FIN, build_packet, parse_packet, parse_client_hello, confirm_checksum, calc_file_hashes
 from Security import encrypt_payload, decrypt_payload
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 # Sliding window specifications
-WINDOW_SIZE  = 16 
+WINDOW_SIZE  = 32
 TIMEOUT = 2.0
 CHUNK_SIZE = 1024  # size of each file chunk to send (in bytes)
 
@@ -51,6 +51,9 @@ class SRFT_UDPServer:
         self.dest_port = 0          # client port
         self.total_packets = 0      # total number of file chunks 
         self.ack_thread = None
+        self.last_ack_num = 0
+        self.dup_ack_count = 0
+        self.dest_ip = None
 
         # attack mode fields
         self.attack_mode = None
@@ -195,51 +198,70 @@ class SRFT_UDPServer:
                 if not confirm_checksum(p_type, checksum, seq, ack_num, payload):
                     print(f"[SERVER] Checksum mismatch: corrupted ACK packet seq={seq} discarded")
                     continue
- 
-            print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")
+            
+            # print line for debugging
+            # print(f"[SERVER] ACK received: cumulative ack_num = {ack_num}")
  
             with self.window_lock:
-                # Remove every packet whose seq_num <= ack_num from the unacked dict.
-                # These are now safely delivered — no need to retransmit them.
+                # duplicate ACK tracking
+                if ack_num == self.last_ack_num:
+                    self.dup_ack_count += 1
+                else:
+                    self.last_ack_num = ack_num
+                    self.dup_ack_count = 0
+
+                # remove acknowledged packets
                 for seq_num in list(self.unacked.keys()):
                     if seq_num <= ack_num:
                         del self.unacked[seq_num]
- 
-                # Advance the window base
+
+                # advance window base
                 if ack_num >= self.base:
                     self.base = ack_num + 1
- 
+
                 self.stats["received_from_client"] += 1
+
+                # fast retransmit after 3 duplicate ACKs
+                if self.dup_ack_count >= 3:
+                    missing_seq = ack_num + 1
+                    if missing_seq in self.unacked:
+                        self.send_sock.sendto(self.unacked[missing_seq]["packet"], (self.dest_ip, 0))
+                        self.unacked[missing_seq]["sent_time"] = time.time()
+                        self.stats["retransmitted"] += 1
+                    self.dup_ack_count = 0
  
             # If the base has moved past all packets, the entire file is acknowledged
             if self.base > self.total_packets:
                 self.transfer_done.set()
 
     def send_file(self, filename, dest_ip, dest_port, enc_key=None, session_id=None):
+        self.last_ack_num = 0
+        self.dup_ack_count = 0
+        self.dest_ip = dest_ip
         if not os.path.exists(filename):
             print(f"[SERVER] Error: file '{filename}' not found.")
             return
  
-        with open(filename, 'rb') as f:
-            file_data = f.read()
+        # get file size to avoid loading file into memory
+        file_size = os.path.getsize(filename)
 
-        # calculate the digest of the file data
-        file_digest = calc_file_digest_bytes(file_data)
-        self.stats["original_file_md5"] = hashlib.md5(file_data).hexdigest()
- 
-        chunks        = [file_data[i: i + CHUNK_SIZE] for i in range(0, len(file_data), CHUNK_SIZE)]
-        total_packets = len(chunks)
- 
-        self.stats["filename"]   = filename
-        self.stats["filesize"]   = len(file_data)
+        # calc hashes through streaming
+        original_md5, file_digest = calc_file_hashes(filename)
+
+        # total number of chunks
+        total_packets = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+        self.stats["filename"] = filename
+        self.stats["filesize"] = file_size
         self.stats["start_time"] = time.time()
+        self.stats["original_file_md5"] = original_md5
 
         self.dest_port = dest_port
         self.total_packets = total_packets
         self.enc_key    = enc_key
         self.session_id = session_id
  
-        print(f"[SERVER] Sending '{filename}' | {len(file_data)} bytes | {total_packets} packets")
+        print(f"[SERVER] Sending '{filename}' | {file_size} bytes | {total_packets} packets")
  
         # Reset sliding window state
         self.base            = 1
@@ -257,68 +279,76 @@ class SRFT_UDPServer:
         self.start_ack_thread()
  
         next_seq = 1   # next sequence number to send
+        send_file_obj = open(filename, "rb")
  
-        # Main loop: continue until all packets are acknowledged
-        while not self.transfer_done.is_set():
-            # Send new packets as long as there is space in the window and there are still packets left to send
-            with self.window_lock:
-                while next_seq <= total_packets and next_seq < self.base + WINDOW_SIZE:
-                    chunk  = chunks[next_seq - 1]   # seq numbers start at 1, list index at 0
-                    # if enc_key is provided encrypt the chunk before sending
-                    # if enc_key is None (Phase 1) send plaintext as before
-                    if enc_key is not None:
-                        chunk = encrypt_payload(enc_key, session_id, next_seq, 0, TYPE_DATA, chunk)
-                    clean_packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
-                                           dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA)
-                    
-                    packet = clean_packet
-                    
-                    # tamper packet if tamper mode
-                    if self.attack_mode == "tamper" and not self.has_tampered:
-                        packet = self.tamper_packet(clean_packet, next_seq)
+        try:
+            # Main loop: continue until all packets are acknowledged
+            while not self.transfer_done.is_set():
+                # Send new packets as long as there is space in the window and there are still packets left to send
+                with self.window_lock:
+                    while next_seq <= total_packets and next_seq < self.base + WINDOW_SIZE:
+                        send_file_obj.seek((next_seq - 1) * CHUNK_SIZE)
+                        chunk = send_file_obj.read(CHUNK_SIZE)   # seq numbers start at 1, list index at 0
+                        # if enc_key is provided encrypt the chunk before sending
+                        # if enc_key is None (Phase 1) send plaintext as before
+                        if enc_key is not None:
+                            chunk = encrypt_payload(enc_key, session_id, next_seq, 0, TYPE_DATA, chunk)
+                        clean_packet = build_packet(data=chunk, seq_num=next_seq, ack_num=0, src_ip=self.server_ip,
+                                            dst_ip=dest_ip, src_port=self.server_port, dst_port=dest_port, p_type=TYPE_DATA)
+                        
+                        packet = clean_packet
+                        
+                        # tamper packet if tamper mode
+                        if self.attack_mode == "tamper" and not self.has_tampered:
+                            packet = self.tamper_packet(clean_packet, next_seq)
 
-                    # store packet if replay mode
-                    if self.attack_mode == "replay" and self.replay_packet is None:
-                        self.store_replay_packet(clean_packet, next_seq)
+                        # store packet if replay mode
+                        if self.attack_mode == "replay" and self.replay_packet is None:
+                            self.store_replay_packet(clean_packet, next_seq)
 
-                    self.send_sock.sendto(packet, (dest_ip, 0))
- 
-                    # Record packet in unacked dict so we can retransmit if needed
-                    self.unacked[next_seq] = {
-                        "packet"    : clean_packet,
-                        "sent_time" : time.time()
-                    }
- 
+                        self.send_sock.sendto(packet, (dest_ip, 0))
+    
+                        # Record packet in unacked dict so we can retransmit if needed
+                        self.unacked[next_seq] = {
+                            "packet"    : clean_packet,
+                            "sent_time" : time.time()
+                        }
+    
+                        self.stats["packets_sent"] += 1
+                        # print line for debugging
+                        # print(f"[SERVER] Sent packet seq={next_seq}")
+                        next_seq += 1
+
+                # send stored replay packet if replay mode is on, packet is stored, no previoud replay packet was sent
+                # send after the base seq has passed the replay seq
+                if (self.attack_mode == "replay"
+                    and self.replay_packet is not None
+                    and not self.replay_sent
+                    and self.base > self.replay_seq):
+                    self.send_sock.sendto(self.replay_packet, (dest_ip, 0))
+                    self.replay_sent = True
                     self.stats["packets_sent"] += 1
-                    print(f"[SERVER] Sent packet seq={next_seq}")
-                    next_seq += 1
+                    print(f"[SERVER ATTACK] Replayed old data packet seq={self.replay_seq}")
 
-            # send stored replay packet if replay mode is on, packet is stored, no previoud replay packet was sent
-            # send after the base seq has passed the replay seq
-            if (self.attack_mode == "replay"
-                and self.replay_packet is not None
-                and not self.replay_sent
-                and self.base > self.replay_seq):
-                self.send_sock.sendto(self.replay_packet, (dest_ip, 0))
-                self.replay_sent = True
-                self.stats["packets_sent"] += 1
-                print(f"[SERVER ATTACK] Replayed old data packet seq={self.replay_seq}")
-
-            # inject forged packet if inject mode is on and no previous injection happened.
-            if self.attack_mode == "inject" and not self.inject_sent:
-                self.inject_forged_packet(dest_ip, dest_port)
- 
-            # Check every unacknowledged packet — if its timer has expired, resend it
-            now = time.time()
-            with self.window_lock:
-                for seq_num, info in list(self.unacked.items()):
-                    if now - info["sent_time"] > TIMEOUT:
-                        self.send_sock.sendto(info["packet"], (dest_ip, 0))
-                        self.unacked[seq_num]["sent_time"] = now   # reset the timer
-                        self.stats["retransmitted"] += 1
-                        print(f"[SERVER] Timeout — retransmitting packet seq={seq_num}")
- 
-            time.sleep(0.01)
+                # inject forged packet if inject mode is on and no previous injection happened.
+                if self.attack_mode == "inject" and not self.inject_sent:
+                    self.inject_forged_packet(dest_ip, dest_port)
+    
+                # Check every unacknowledged packet — if its timer has expired, resend it
+                now = time.time()
+                with self.window_lock:
+                    if self.base in self.unacked:
+                        info = self.unacked[self.base]
+                        if now - info["sent_time"] > TIMEOUT:
+                            self.send_sock.sendto(info["packet"], (self.dest_ip, 0))
+                            self.unacked[self.base]["sent_time"] = now
+                            self.stats["retransmitted"] += 1
+                            # print line for debugging
+                            # print(f"[SERVER] Timeout — retransmitting packet seq={seq_num}")
+    
+                time.sleep(0.01)
+        finally:
+            send_file_obj.close()
  
         # place file digest in fin payload
         fin_payload = file_digest.encode()
