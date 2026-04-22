@@ -42,8 +42,12 @@ SSH into both instances with separate console instances.
 **Step 1 — Start the server first:**
 ```bash
 sudo python3 SRFT_UDPServer.py
+sudo python3 SRFT_UDPServer.py <tamper/replay/inject>
 ```
+ Do not add additional argument if the server is to be ran in normal mode.
  
+ To turn on attack mode, replace `<tamper/replay/inject>` with `tamper`, `replay`, or `inject` to turn on the respective attack mode.
+
 **Step 2 — Start the client, providing the filename to request:**
 ```bash
 sudo python3 SRFT_UDPClient.py <filepath>
